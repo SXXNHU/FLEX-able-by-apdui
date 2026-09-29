@@ -23,6 +23,25 @@ npm run test:e2e     # 모바일 브라우저 사용자 흐름
 
 GitHub Actions에서도 계산 테스트, 빌드, 모바일 브라우저 테스트를 수행합니다.
 
+## Backend (전환 중)
+
+데이터와 규칙을 Spring Boot + MySQL로 옮기는 중입니다. 설계와 단계는 [docs/architecture.md](docs/architecture.md)에 있습니다. 현재 프론트는 아직 localStorage를 사용합니다.
+
+각 구성요소는 따로 실행할 수 있고, 어떤 순서로 띄워도 됩니다.
+
+```sh
+docker compose up db                 # MySQL 8.4 (localhost:3306)
+cd backend && ./gradlew bootRun      # Java 21, localhost:8080
+npm run dev                          # 프론트
+docker compose up                    # 전체 (프론트 localhost:3000)
+cd backend && ./gradlew test         # Testcontainers로 MySQL을 띄워 테스트 (Docker 필요)
+```
+
+- `GET /actuator/health/liveness`: 프로세스 생존 여부
+- `GET /actuator/health/readiness`: DB 연결과 스키마 준비 여부
+- DB가 없으면 백엔드는 떠 있지만 readiness가 DOWN이고, API는 `503`과 `Retry-After`를 돌려줍니다. DB가 준비되면 재시작 없이 정상화됩니다.
+- 설정은 환경변수(`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `CORS_ALLOWED_ORIGINS`, `SERVER_PORT`)로 바꾸며, compose용 값은 `.env.example`에 있습니다.
+
 ## 화면과 기능
 
 | 화면      | 동작                                                                                                        |

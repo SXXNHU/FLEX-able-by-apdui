@@ -1,0 +1,66 @@
+# 모든 값은 환경변수로 덮어쓸 수 있다. 기본값은 로컬 개발용이다.
+spring:
+  application:
+    name: flexable-backend
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/flexable?serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
+    username: ${DB_USERNAME:flexable}
+    password: ${DB_PASSWORD:flexable}
+    hikari:
+      # DB가 없어도 프로세스는 뜬다. 연결은 요청 시점에 다시 시도한다.
+      initialization-fail-timeout: -1
+      # DB 장애 시 요청과 헬스체크가 오래 매달리지 않게 한다.
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:3000}
+      validation-timeout: 2000
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: none
+    properties:
+      # 부팅 중 JDBC 메타데이터를 읽지 않는다 (DB 없이 EntityManagerFactory 생성).
+      hibernate.boot.allow_jdbc_metadata_access: false
+      hibernate.dialect: org.hibernate.dialect.MySQLDialect
+      jakarta.persistence.database-product-name: MySQL
+      jakarta.persistence.database-major-version: 8
+      jakarta.persistence.database-minor-version: 4
+      hibernate.jdbc.time_zone: Asia/Seoul
+  flyway:
+    # 시작 시점 마이그레이션은 DB가 없으면 부팅을 실패시키므로 끈다.
+    # SchemaMigrator가 백그라운드에서 재시도하며 실행한다.
+    enabled: false
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: ${HEALTH_SHOW_DETAILS:never}
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,schema
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+app:
+  cors:
+    # Vite 개발 서버, 로컬 미리보기, Capacitor Android(https://localhost), iOS(capacitor://localhost)
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,https://localhost,capacitor://localhost}
+  schema:
+    retry-initial-delay: ${SCHEMA_RETRY_INITIAL_DELAY:2s}
+    retry-max-delay: ${SCHEMA_RETRY_MAX_DELAY:30s}
+  # 인증 도입 전까지 모든 요청은 이 개발용 사용자로 처리한다.
+  dev-user-id: ${DEV_USER_ID:00000000-0000-0000-0000-000000000001}

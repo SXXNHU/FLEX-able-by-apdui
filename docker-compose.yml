@@ -1,0 +1,51 @@
+# 각 서비스는 단독으로도 실행할 수 있다.
+#   docker compose up db         # DB만 (로컬에서 ./gradlew bootRun, npm run dev와 함께)
+#   docker compose up backend    # DB가 없어도 뜨고, DB가 준비되면 스스로 스키마를 만들고 정상화
+#   docker compose up frontend   # 정적 앱만 서빙
+#   docker compose up            # 전체
+#
+# depends_on은 일부러 두지 않는다. 기동 순서가 아니라 애플리케이션의 재시도와 readiness로 순서 문제를 푼다.
+name: flexable
+
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-flexable}
+      MYSQL_USER: ${DB_USERNAME:-flexable}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-flexable}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-flexable-root}
+      TZ: Asia/Seoul
+    command: ['--character-set-server=utf8mb4', '--collation-server=utf8mb4_0900_ai_ci']
+    ports:
+      - '${DB_PORT:-3306}:3306'
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      # 같은 compose 네트워크에서는 서비스 이름으로, 외부 DB라면 DB_URL을 바꿔서 실행한다.
+      DB_URL: ${BACKEND_DB_URL:-jdbc:mysql://db:3306/flexable?serverTimezone=Asia/Seoul&characterEncoding=UTF-8}
+      DB_USERNAME: ${DB_USERNAME:-flexable}
+      DB_PASSWORD: ${DB_PASSWORD:-flexable}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000,https://localhost,capacitor://localhost}
+    ports:
+      - '${BACKEND_PORT:-8080}:8080'
+    restart: unless-stopped
+
+  frontend:
+    build: .
+    ports:
+      - '${FRONTEND_PORT:-3000}:80'
+    restart: unless-stopped
+
+volumes:
+  db-data:
