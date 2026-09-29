@@ -3,6 +3,7 @@ package com.flexable.profile;
 import java.time.Instant;
 import java.time.LocalDate;
 
+import com.flexable.ledger.domain.LedgerProfile;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -56,6 +57,9 @@ public class Profile {
 	@Column(name = "tracking_start", nullable = false)
 	private LocalDate trackingStart;
 
+	@Column(name = "last_reconciled_at")
+	private Instant lastReconciledAt;
+
 	@Version
 	private long version;
 
@@ -79,6 +83,27 @@ public class Profile {
 		this.protectionCycle = request.protectionCycle();
 		this.cardOutstanding = request.cardOutstanding();
 		this.updatedAt = now;
+	}
+
+	/** 거래 반영 결과로 바뀐 잔액과 미결제 카드액을 기록한다. */
+	public void applyMoney(LedgerProfile money, Instant now) {
+		if (money.balance() != balance || money.cardOutstanding() != cardOutstanding) {
+			this.balance = money.balance();
+			this.cardOutstanding = money.cardOutstanding();
+			this.updatedAt = now;
+		}
+	}
+
+	public void markReconciled(Instant now) {
+		this.lastReconciledAt = now;
+	}
+
+	public LedgerProfile toLedgerProfile() {
+		return new LedgerProfile(balance, cardOutstanding, protectedAmount, incomeDate, trackingStart);
+	}
+
+	public Instant getLastReconciledAt() {
+		return lastReconciledAt;
 	}
 
 	public String getUserId() {

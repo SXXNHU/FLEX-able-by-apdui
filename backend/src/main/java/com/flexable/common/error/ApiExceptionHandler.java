@@ -14,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -35,6 +36,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 	@ExceptionHandler(BusinessRuleException.class)
 	ProblemDetail businessRule(BusinessRuleException ex) {
 		return problem(HttpStatus.UNPROCESSABLE_CONTENT, ex.code(), ex.getMessage());
+	}
+
+	@ExceptionHandler(ConflictException.class)
+	ProblemDetail conflict(ConflictException ex) {
+		return problem(HttpStatus.CONFLICT, "conflict", ex.getMessage());
 	}
 
 	@ExceptionHandler(NotFoundException.class)
@@ -64,6 +70,13 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 		ProblemDetail body = problem(HttpStatus.BAD_REQUEST, "validation_failed", "입력값을 확인해주세요.");
 		body.setProperty("fields", fields);
 		return ResponseEntity.badRequest().body(body);
+	}
+
+	@Override
+	protected ResponseEntity<Object> handleHttpMessageNotReadable(HttpMessageNotReadableException ex,
+			HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+		return ResponseEntity.badRequest()
+			.body(problem(HttpStatus.BAD_REQUEST, "malformed_request", "요청 형식을 읽을 수 없어요. 값의 형식을 확인해주세요."));
 	}
 
 	@ExceptionHandler(Exception.class)

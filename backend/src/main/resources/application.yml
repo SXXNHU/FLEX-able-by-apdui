@@ -25,6 +25,11 @@ spring:
       jakarta.persistence.database-major-version: 8
       jakarta.persistence.database-minor-version: 4
       hibernate.jdbc.time_zone: Asia/Seoul
+  jackson:
+    deserialization:
+      # Jackson 3 기본값은 생략된 원시 타입 필드(boolean 등)를 거부한다. 생략 시 기본값을 쓰고,
+      # 필수 값은 Bean Validation이 필드 단위 오류로 알려준다.
+      fail-on-null-for-primitives: false
   flyway:
     # 시작 시점 마이그레이션은 DB가 없으면 부팅을 실패시키므로 끈다.
     # SchemaMigrator가 백그라운드에서 재시도하며 실행한다.
@@ -64,3 +69,6 @@ app:
     retry-max-delay: ${SCHEMA_RETRY_MAX_DELAY:30s}
   # 인증 도입 전까지 모든 요청은 이 개발용 사용자로 처리한다.
   dev-user-id: ${DEV_USER_ID:00000000-0000-0000-0000-000000000001}
+  dev-auth:
+    # true면 X-Dev-User-Id 헤더로 사용자를 바꿀 수 있다. 테스트 격리용이며 운영에서는 끈다.
+    header-enabled: ${DEV_AUTH_HEADER_ENABLED:false}

@@ -7,12 +7,16 @@ import java.util.UUID;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties("app")
-public record AppProperties(Cors cors, Schema schema, UUID devUserId) {
+public record AppProperties(Cors cors, Schema schema, UUID devUserId, DevAuth devAuth) {
 
 	public record Cors(List<String> allowedOrigins) {
 	}
 
 	public record Schema(Duration retryInitialDelay, Duration retryMaxDelay) {
+	}
+
+	/** 인증 도입 전 임시 설정 */
+	public record DevAuth(boolean headerEnabled) {
 	}
 
 }

@@ -15,23 +15,38 @@ public final class Http {
 
 	private final String base;
 
+	private final String userId;
+
 	public Http(int port) {
+		this(port, null);
+	}
+
+	/** {@code userId}를 주면 X-Dev-User-Id 헤더로 보낸다 (테스트 간 데이터 격리). */
+	public Http(int port, String userId) {
 		this.base = "http://localhost:" + port;
+		this.userId = userId;
 	}
 
 	public HttpResponse<String> get(String path) {
-		return send(HttpRequest.newBuilder(URI.create(base + path)).GET());
+		return send(request(path).GET());
 	}
 
 	public HttpResponse<String> put(String path, String json) {
-		return send(HttpRequest.newBuilder(URI.create(base + path))
-			.header("Content-Type", "application/json")
+		return send(request(path).header("Content-Type", "application/json")
 			.PUT(HttpRequest.BodyPublishers.ofString(json)));
 	}
 
+	public HttpResponse<String> post(String path, String json) {
+		return send(request(path).header("Content-Type", "application/json")
+			.POST(HttpRequest.BodyPublishers.ofString(json)));
+	}
+
+	public HttpResponse<String> delete(String path) {
+		return send(request(path).DELETE());
+	}
+
 	public HttpResponse<String> preflight(String path, String origin) {
-		return send(HttpRequest.newBuilder(URI.create(base + path))
-			.header("Origin", origin)
+		return send(request(path).header("Origin", origin)
 			.header("Access-Control-Request-Method", "PUT")
 			.method("OPTIONS", HttpRequest.BodyPublishers.noBody()));
 	}
@@ -55,6 +70,14 @@ public final class Http {
 			last = get(path);
 		}
 		return last;
+	}
+
+	private HttpRequest.Builder request(String path) {
+		HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(base + path));
+		if (userId != null) {
+			builder.header("X-Dev-User-Id", userId);
+		}
+		return builder;
 	}
 
 	private static HttpResponse<String> send(HttpRequest.Builder request) {

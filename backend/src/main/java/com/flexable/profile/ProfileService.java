@@ -41,7 +41,8 @@ public class ProfileService {
 					"다음 수입일을 오늘 이후로 설정해주세요. 오늘 입금된 돈은 현재 잔액에 포함해주세요.");
 		}
 		String userId = currentUser.requireId();
-		Profile profile = profiles.findById(userId).orElseGet(() -> new Profile(userId, today.minusDays(1)));
+		// 거래 반영과 같은 잠금을 써서, 설정 수정이 동시에 반영된 거래의 잔액 변경을 덮어쓰지 않게 한다.
+		Profile profile = profiles.findForUpdate(userId).orElseGet(() -> new Profile(userId, today.minusDays(1)));
 		profile.update(request, clock.instant());
 		return ProfileResponse.of(profiles.saveAndFlush(profile));
 	}
