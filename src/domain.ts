@@ -24,6 +24,11 @@ export interface Plan {
   category: Category
   confirmed: boolean
   note: string
+  calendarRef?: CalendarRef
+}
+export interface CalendarRef {
+  provider: 'google' | 'device'
+  id: string
 }
 export interface Transaction {
   id: string
@@ -37,7 +42,37 @@ export interface Transaction {
   fixedId?: string
   refundOf?: string
   closesItem?: boolean
-  source: 'manual' | 'capture' | 'demo'
+  source: TransactionSource
+  externalId?: string
+}
+export type TransactionSource = 'manual' | 'capture' | 'demo' | 'csv' | 'notification' | 'bank'
+export const transactionSources: TransactionSource[] = [
+  'manual',
+  'capture',
+  'demo',
+  'csv',
+  'notification',
+  'bank',
+]
+export const sourceLabels: Record<TransactionSource, string> = {
+  manual: '직접 입력',
+  capture: '캡처 확인',
+  demo: '시연 데이터',
+  csv: 'CSV 파일',
+  notification: '결제 알림',
+  bank: '계좌 연동',
+}
+/** 자동 등록 중 중복이 의심되어 사용자 확인을 기다리는 거래 */
+export interface PendingImport {
+  id: string
+  title: string
+  amount: number
+  date: string
+  category: Category
+  kind: 'expense' | 'income'
+  method: 'cash' | 'card'
+  source: 'notification' | 'bank'
+  externalId?: string
 }
 export interface Memory {
   id: string
@@ -57,6 +92,9 @@ export interface AppState {
   notificationTime: string
   notifications: boolean
   demo: boolean
+  inbox?: PendingImport[]
+  autoImport?: boolean
+  lastBankSync?: string
 }
 export const uid = () => crypto.randomUUID()
 export const won = (value: number) => Math.round(value).toLocaleString('ko-KR')
@@ -214,13 +252,53 @@ export function removeTransaction(state: AppState, id: string): AppState {
     reconciledDates: state.reconciledDates.filter((d) => d !== tx.date),
   }
 }
-export function isDuplicate(state: AppState, tx: Pick<Transaction, 'date' | 'amount' | 'title'>) {
-  return state.transactions.some(
-    (t) =>
-      t.date === tx.date &&
-      t.amount === tx.amount &&
-      t.title.replace(/\s/g, '') === tx.title.replace(/\s/g, ''),
-  )
+export type DuplicateLike = Pick<Transaction, 'date' | 'amount' | 'title'> & { kind?: TransactionKind }
+export interface DuplicateMatch {
+  tx: Transaction
+  level: 'exact' | 'likely'
+}
+export function normalizeTitle(title: string) {
+  return title
+    .toLowerCase()
+    .replace(/\(주\)|㈜|주식회사|\(유\)|유한회사/g, '')
+    .replace(/[^0-9a-z가-힣]/g, '')
+}
+function bigrams(value: string) {
+  return Array.from({ length: Math.max(0, value.length - 1) }, (_, i) => value.slice(i, i + 2))
+}
+/** 가맹점 표기가 출처마다 조금씩 다른 경우(예: 스타벅스코리아 / 스타벅스 강남점)도 비슷하다고 본다. */
+export function similarTitle(a: string, b: string) {
+  const x = normalizeTitle(a)
+  const y = normalizeTitle(b)
+  if (!x || !y) return false
+  if (x === y || x.includes(y) || y.includes(x)) return true
+  const left = bigrams(x)
+  const right = new Set(bigrams(y))
+  if (!left.length || !right.size) return false
+  const common = left.filter((g) => right.has(g)).length
+  return (2 * common) / (left.length + right.size) >= 0.5
+}
+const direction = (kind?: TransactionKind) =>
+  kind === 'income' || kind === 'refund' ? 'in' : kind === 'transfer' ? 'move' : 'out'
+/**
+ * 같은 결제가 이미 등록되어 있는지 찾는다. 막지 않고 사용자에게 확인받기 위한 후보만 돌려준다.
+ * - exact: 같은 날짜 · 금액 · 이름
+ * - likely: 같은 금액이면서 같은 날짜이거나, 하루 차이(승인일/매입일)이면서 이름이 비슷함
+ */
+export function findDuplicates(transactions: Transaction[], tx: DuplicateLike): DuplicateMatch[] {
+  const matches: DuplicateMatch[] = []
+  for (const t of transactions) {
+    if (t.amount !== tx.amount || direction(t.kind) !== direction(tx.kind)) continue
+    const gap = Math.abs(dayDiff(t.date, tx.date))
+    if (gap > 1) continue
+    if (gap === 0 && normalizeTitle(t.title) === normalizeTitle(tx.title))
+      matches.push({ tx: t, level: 'exact' })
+    else if (gap === 0 || similarTitle(t.title, tx.title)) matches.push({ tx: t, level: 'likely' })
+  }
+  return matches.sort((a, b) => (a.level === b.level ? 0 : a.level === 'exact' ? -1 : 1))
+}
+export function isDuplicate(state: AppState, tx: DuplicateLike) {
+  return findDuplicates(state.transactions, tx).length > 0
 }
 export function emptyState(today = localDate()): AppState {
   return {
@@ -461,7 +539,9 @@ export function validateState(value: unknown): value is AppState {
         money(p.amount) &&
         validDate(p.date) &&
         categories.includes(p.category) &&
-        typeof p.confirmed === 'boolean',
+        typeof p.confirmed === 'boolean' &&
+        (p.calendarRef === undefined ||
+          (['google', 'device'].includes(p.calendarRef.provider) && str(p.calendarRef.id))),
     )
   )
     return false
@@ -478,7 +558,8 @@ export function validateState(value: unknown): value is AppState {
         categories.includes(t.category) &&
         ['expense', 'income', 'refund', 'transfer', 'card_payment'].includes(t.kind) &&
         ['cash', 'card'].includes(t.method) &&
-        ['manual', 'capture', 'demo'].includes(t.source) &&
+        transactionSources.includes(t.source) &&
+        (t.externalId === undefined || (typeof t.externalId === 'string' && t.externalId.length <= 300)) &&
         (t.closesItem === undefined || typeof t.closesItem === 'boolean') &&
         !(t.planId && t.fixedId) &&
         (!t.planId || s.plans.some((p) => p.id === t.planId)) &&
@@ -496,6 +577,31 @@ export function validateState(value: unknown): value is AppState {
   if (new Set([...s.plans, ...s.fixed].map((i) => i.id)).size !== s.plans.length + s.fixed.length)
     return false
   if (s.trackingStart !== undefined && !validDate(s.trackingStart)) return false
+  if (
+    s.inbox !== undefined &&
+    !(
+      Array.isArray(s.inbox) &&
+      s.inbox.length <= 1000 &&
+      s.inbox.every(
+        (i) =>
+          i &&
+          id(i.id) &&
+          str(i.title) &&
+          money(i.amount) &&
+          i.amount > 0 &&
+          validDate(i.date) &&
+          categories.includes(i.category) &&
+          ['expense', 'income'].includes(i.kind) &&
+          ['cash', 'card'].includes(i.method) &&
+          ['notification', 'bank'].includes(i.source) &&
+          (i.externalId === undefined || (typeof i.externalId === 'string' && i.externalId.length <= 300)),
+      )
+    )
+  )
+    return false
+  if (s.autoImport !== undefined && typeof s.autoImport !== 'boolean') return false
+  if (s.lastBankSync !== undefined && !(str(s.lastBankSync) && Number.isFinite(Date.parse(s.lastBankSync))))
+    return false
   for (const t of s.transactions) {
     if (t.kind !== 'expense' && t.kind !== 'refund' && (t.planId || t.fixedId)) return false
     if (t.kind === 'refund') {

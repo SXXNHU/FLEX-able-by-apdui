@@ -20,11 +20,12 @@ import {
   dateLabel,
   emptyState,
   estimateFromHistory,
-  isDuplicate,
+  findDuplicates,
   localDate,
   parseCaptureText,
   parsePlan,
   removeTransaction,
+  sourceLabels,
   uid,
   validDate,
   won,
@@ -37,6 +38,7 @@ import {
   type TransactionKind,
 } from './domain'
 import { Amount, Brand, Button, ErrorText, Field, MoneyInput } from './ui'
+import { CandidateList, toCandidates, type Candidate } from './importUI'
 
 export function ProfileForm({
   state,
@@ -315,7 +317,9 @@ export function ProfileForm({
       )}
       <ErrorText message={error} />
       {onboarding && step < 3 ? (
+        // key가 다르면 '다음' 클릭 중에 같은 버튼이 submit으로 바뀌어 3단계를 건너뛰는 일이 없다.
         <Button
+          key="next"
           onClick={() => {
             if (step === 1 && (!profile.name.trim() || profile.incomeDate <= localDate())) {
               setError('이름과 오늘 이후의 수입일을 입력해주세요.')
@@ -333,7 +337,7 @@ export function ProfileForm({
           다음 <ArrowRight size={17} />
         </Button>
       ) : (
-        <Button type="submit">
+        <Button key="submit" type="submit">
           {onboarding ? '내 생활비 확인하기' : '예산 설정 저장'} <Check size={17} />
         </Button>
       )}
@@ -651,20 +655,27 @@ export function TransactionForm({
     },
   )
   const [error, setError] = useState('')
-  const [allowDuplicate, setAllowDuplicate] = useState(false)
-  const update = (patch: Partial<Transaction>) => setTx((t) => ({ ...t, ...patch }))
-  const duplicateState = { ...state, transactions: state.transactions.filter((t) => t.id !== initial?.id) }
-  const submit = (e: FormEvent) => {
-    e.preventDefault()
-    if (isDuplicate(duplicateState, tx) && !allowDuplicate) {
-      setError('같은 날짜·이름·금액의 거래가 있어요. 중복 여부를 확인해주세요.')
-      return
-    }
+  const [asking, setAsking] = useState(false)
+  const update = (patch: Partial<Transaction>) => {
+    setAsking(false)
+    setTx((t) => ({ ...t, ...patch }))
+  }
+  const duplicate = findDuplicates(
+    state.transactions.filter((t) => t.id !== initial?.id),
+    tx,
+  )[0]
+  const commit = () => {
     try {
       onSave(addTransaction(initial ? removeTransaction(state, initial.id) : state, tx))
     } catch (e) {
+      setAsking(false)
       setError((e as Error).message)
     }
+  }
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    if (duplicate && !initial) setAsking(true)
+    else commit()
   }
   return (
     <form className="form-stack" onSubmit={submit}>
@@ -811,36 +822,37 @@ export function TransactionForm({
           실제 입금액을 현재 잔액에 더해요. 수입일이 지났다면 내 예산에서 다음 수입일도 변경해주세요.
         </p>
       )}
-      {isDuplicate(duplicateState, tx) && (
-        <label className="check-row">
-          <input
-            type="checkbox"
-            checked={allowDuplicate}
-            onChange={(e) => setAllowDuplicate(e.target.checked)}
-          />
-          <span>기존 내역과 다른 거래가 맞아요</span>
-        </label>
+      {duplicate && !asking && (
+        <p className="duplicate-note">
+          비슷한 거래가 있어요: {duplicate.tx.title} · {won(duplicate.tx.amount)}원 ·{' '}
+          {dateLabel(duplicate.tx.date)} ({sourceLabels[duplicate.tx.source]})
+        </p>
       )}
       <ErrorText message={error} />
-      <Button type="submit">
-        거래 반영하기 <Check size={17} />
-      </Button>
+      {asking ? (
+        <div className="warning-box duplicate-confirm" role="alertdialog" aria-label="중복 거래 확인">
+          <p>
+            <strong>이미 있는 거래 같아요. 그래도 추가할까요?</strong>
+            {duplicate?.tx.title} {won(duplicate?.tx.amount || 0)}원이{' '}
+            {sourceLabels[duplicate?.tx.source || 'manual']}
+            (으)로 이미 등록돼 있어요. 같은 결제라면 잔액이 두 번 빠져요.
+          </p>
+          <Button variant="danger" onClick={commit}>
+            다른 거래예요, 추가할게요
+          </Button>
+          <Button variant="quiet" onClick={() => setAsking(false)}>
+            추가하지 않기
+          </Button>
+        </div>
+      ) : (
+        <Button type="submit">
+          거래 반영하기 <Check size={17} />
+        </Button>
+      )}
     </form>
   )
 }
 
-type Candidate = {
-  id: string
-  title: string
-  amount: number
-  date: string
-  selected: boolean
-  category: Category
-  method: 'cash' | 'card'
-  link: string
-  closesItem: boolean
-  kind: 'expense' | 'income' | 'transfer'
-}
 export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state: AppState) => void }) {
   const [preview, setPreview] = useState('')
   const [busy, setBusy] = useState(false)
@@ -849,7 +861,6 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
   const [text, setText] = useState('')
   const [rows, setRows] = useState<Candidate[]>([])
   const [date, setDate] = useState(addDays(localDate(), -1))
-  const [confirmed, setConfirmed] = useState(false)
   const worker = useRef<{ terminate: () => Promise<unknown> } | null>(null)
   const alive = useRef(true)
   useEffect(() => {
@@ -866,18 +877,7 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
     [preview],
   )
   const candidates = (content: string) =>
-    setRows(
-      parseCaptureText(content, date).map((r) => ({
-        ...r,
-        id: uid(),
-        selected: !isDuplicate(state, r),
-        category: '기타',
-        method: 'cash',
-        link: '',
-        closesItem: false,
-        kind: 'expense',
-      })),
-    )
+    setRows(toCandidates(parseCaptureText(content, date).map((r) => ({ ...r, kind: 'expense' as const }))))
   const recognize = async (file: File) => {
     if (!file.type.startsWith('image/') || file.size > 12 * 1024 * 1024) {
       setError('12MB 이하의 이미지 파일을 선택해주세요.')
@@ -888,7 +888,6 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
     setError('')
     setProgress(0)
     setRows([])
-    setConfirmed(false)
     try {
       const { createWorker } = await import('tesseract.js')
       if (!alive.current) return
@@ -918,35 +917,6 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
       worker.current = null
     } finally {
       if (alive.current) setBusy(false)
-    }
-  }
-  const update = (id: string, patch: Partial<Candidate>) =>
-    setRows((items) => items.map((r) => (r.id === id ? { ...r, ...patch } : r)))
-  const save = () => {
-    try {
-      let next = state
-      const selected = rows.filter((r) => r.selected)
-      if (!selected.length) throw new Error('반영할 거래를 선택해주세요.')
-      if (!confirmed) throw new Error('날짜·금액·거래 종류와 중복을 확인해주세요.')
-      for (const r of selected) {
-        const [kind, id] = r.link.split(':')
-        next = addTransaction(next, {
-          id: r.id,
-          title: r.title,
-          amount: r.amount,
-          date: r.date,
-          category: r.category,
-          kind: r.kind,
-          method: r.method,
-          planId: r.kind === 'expense' && kind === 'plan' ? id : undefined,
-          fixedId: r.kind === 'expense' && kind === 'fixed' ? id : undefined,
-          closesItem: r.closesItem,
-          source: 'capture',
-        })
-      }
-      onSave(next)
-    } catch (e) {
-      setError((e as Error).message)
     }
   }
   return (
@@ -990,136 +960,16 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
           이 문자로 후보 다시 만들기
         </Button>
       </details>
-      {rows.map((r, index) => (
-        <div className="candidate" key={r.id}>
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={r.selected}
-              onChange={(e) => update(r.id, { selected: e.target.checked })}
-            />
-            <strong>거래 후보 {index + 1}</strong>
-            {isDuplicate(state, r) && <span className="badge amber">중복 의심</span>}
-          </label>
-          <Field label="상호 · 이름">
-            <input value={r.title} maxLength={60} onChange={(e) => update(r.id, { title: e.target.value })} />
-          </Field>
-          <div className="form-columns">
-            <Field label="금액">
-              <MoneyInput value={r.amount} onChange={(amount) => update(r.id, { amount })} />
-            </Field>
-            <Field label="거래일">
-              <input
-                type="date"
-                max={localDate()}
-                value={r.date}
-                onChange={(e) => update(r.id, { date: e.target.value })}
-              />
-            </Field>
-          </div>
-          <div className="form-columns">
-            <Field label="거래 구분">
-              <select
-                value={r.kind}
-                onChange={(e) => update(r.id, { kind: e.target.value as Candidate['kind'] })}
-              >
-                <option value="expense">지출</option>
-                <option value="income">입금 · 수입</option>
-                <option value="transfer">내 계좌 이체</option>
-              </select>
-            </Field>
-            <Field label="카테고리">
-              <select
-                value={r.category}
-                onChange={(e) => update(r.id, { category: e.target.value as Category })}
-              >
-                {categories.map((c) => (
-                  <option key={c}>{c}</option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          {r.kind === 'expense' && (
-            <>
-              <Field label="결제 방법">
-                <select
-                  value={r.method}
-                  onChange={(e) => update(r.id, { method: e.target.value as Candidate['method'] })}
-                >
-                  <option value="cash">계좌 · 체크카드 · 현금</option>
-                  <option value="card">신용카드</option>
-                </select>
-              </Field>
-              <Field label="연결할 예산">
-                <select value={r.link} onChange={(e) => update(r.id, { link: e.target.value })}>
-                  <option value="">일반 생활비</option>
-                  {state.plans
-                    .filter((p) => p.confirmed)
-                    .map((p) => (
-                      <option key={p.id} value={`plan:${p.id}`}>
-                        {p.title}
-                      </option>
-                    ))}
-                  {state.fixed.map((f) => (
-                    <option key={f.id} value={`fixed:${f.id}`}>
-                      {f.title}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              {r.link && (
-                <label className="check-row">
-                  <input
-                    type="checkbox"
-                    checked={r.closesItem}
-                    onChange={(e) => update(r.id, { closesItem: e.target.checked })}
-                  />
-                  <span>이 결제로 계획 정산 완료</span>
-                </label>
-              )}
-            </>
-          )}
-        </div>
-      ))}
-      <Button
-        variant="secondary"
-        disabled={busy}
-        onClick={() =>
-          setRows((items) => [
-            ...items,
-            {
-              id: uid(),
-              title: '',
-              amount: 0,
-              date,
-              selected: true,
-              category: '기타',
-              method: 'cash',
-              link: '',
-              closesItem: false,
-              kind: 'expense',
-            },
-          ])
-        }
-      >
-        <Plus size={16} />
-        거래 후보 직접 추가
-      </Button>
-      {rows.length > 0 && (
-        <>
-          <label className="check-row">
-            <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
-            <span>
-              날짜·금액·중복과 거래 구분을 확인했어요
-              <small>환불과 카드대금 납부는 직접 입력 메뉴에서 원거래에 맞게 등록해주세요.</small>
-            </span>
-          </label>
-          <Button disabled={busy || !confirmed} onClick={save}>
-            선택한 {rows.filter((r) => r.selected).length}건 반영하기
-          </Button>
-        </>
-      )}
       <ErrorText message={error} />
+      <CandidateList
+        state={state}
+        rows={rows}
+        setRows={setRows}
+        source="capture"
+        busy={busy}
+        fallbackDate={date}
+        onSave={onSave}
+      />
     </div>
   )
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
+  AlertTriangle,
   ArrowRight,
   ArrowUpRight,
   Bell,
@@ -11,6 +12,7 @@ import {
   ChevronRight,
   CircleHelp,
   Download,
+  FileSpreadsheet,
   Heart,
   Home,
   Landmark,
@@ -44,6 +46,7 @@ import {
   parseCalendar,
   remainingFor,
   removeTransaction,
+  sourceLabels,
   uid,
   validateState,
   won,
@@ -54,6 +57,7 @@ import {
 } from './domain'
 import { Amount, Brand, Button, CategoryIcon, Empty, ErrorText, Field, Row, Sheet } from './ui'
 import { CaptureForm, PlanForm, ProfileForm, TransactionForm } from './forms'
+import { BankSyncForm, CsvForm, InboxReview } from './importUI'
 
 const KEY = 'flex-able:state:v1'
 type Page = 'home' | 'plans' | 'records' | 'settings'
@@ -69,6 +73,10 @@ type Modal =
         | 'help'
         | 'reset'
         | 'demoImport'
+        | 'csv'
+        | 'inbox'
+        | 'bankSync'
+        | 'autoImport'
     }
   | { type: 'plan'; plan?: Plan }
   | { type: 'planDetail'; plan: Plan }
@@ -363,6 +371,20 @@ export default function App() {
                 onSave={(next) => finish(next, '확인한 거래만 반영했어요. 원본 이미지는 보관하지 않아요.')}
               />
             )}
+            {modal.type === 'csv' && (
+              <CsvForm state={state} onSave={(next) => finish(next, 'CSV에서 확인한 거래를 반영했어요.')} />
+            )}
+            {modal.type === 'bankSync' && (
+              <BankSyncForm state={state} onSave={(next) => finish(next, '계좌 내역을 반영했어요.')} />
+            )}
+            {modal.type === 'inbox' && (
+              <InboxReview
+                state={state}
+                onSave={(next, message) => {
+                  if (save(next, message) && !next.inbox?.length) setModal(null)
+                }}
+              />
+            )}
             {modal.type === 'reconcile' && (
               <Reconcile
                 state={state}
@@ -565,6 +587,16 @@ function HomePage({
             })
           : '아직 확인 전'}
       </p>
+      {!!state.inbox?.length && (
+        <button className="today-plan-banner inbox-banner" onClick={() => open({ type: 'inbox' })}>
+          <AlertTriangle size={19} />
+          <span>
+            이미 있는 거래 같아요
+            <strong>자동으로 가져온 {state.inbox.length}건, 추가할지 확인해주세요</strong>
+          </span>
+          <ChevronRight size={18} />
+        </button>
+      )}
       {b.todayPlanned > 0 && (
         <button className="today-plan-banner" onClick={() => navigate('plans')}>
           <Heart size={19} />
@@ -580,6 +612,12 @@ function HomePage({
             <Plus size={23} />
           </span>
           <strong>지출 기록</strong>
+        </button>
+        <button onClick={() => open({ type: 'csv' })}>
+          <span className="quick-icon lilac">
+            <FileSpreadsheet size={23} />
+          </span>
+          <strong>CSV 업로드</strong>
         </button>
         <button onClick={() => open({ type: 'capture' })}>
           <span className="quick-icon blue">
@@ -1022,10 +1060,26 @@ function RecordsPage({ state, today, open }: { state: AppState; today: string; o
       ) : (
         <Empty title="표시할 거래가 없어요" detail="캡처를 올리거나 직접 내역을 기록해주세요." />
       )}
+      <button className="reconcile-callout" onClick={() => open({ type: 'bankSync' })}>
+        <span className="item-icon blue">
+          <RefreshCw size={20} />
+        </span>
+        <span>
+          <strong>계좌 내역 업데이트</strong>
+          <small>
+            {state.lastBankSync
+              ? `마지막 업데이트 ${new Date(state.lastBankSync).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+              : '연결한 계좌의 최근 거래를 불러와요'}
+          </small>
+        </span>
+        <ChevronRight size={19} />
+      </button>
       <button className="demo-link" onClick={() => open({ type: 'demoImport' })}>
         금융 연동 대신 예시 내역으로 시연하기
       </button>
-      <p className="footer-note">토스·카카오페이 자동 연동은 연결되어 있지 않아요.</p>
+      <p className="footer-note">
+        계좌 업데이트, CSV, 캡처, 결제 알림으로 가져온 거래는 중복을 확인한 뒤 반영해요.
+      </p>
     </>
   )
 }
@@ -1483,10 +1537,7 @@ function TransactionDetail({
           }[tx.kind]
         }
       />
-      <Row
-        title="입력 방식"
-        value={{ manual: '직접 입력', capture: '캡처 확인', demo: '시연 데이터' }[tx.source]}
-      />
+      <Row title="입력 방식" value={sourceLabels[tx.source]} />
       {link && <Row title="연결한 예산" value={link} />}
       <Button variant="secondary" onClick={() => open({ type: 'transaction', initial: tx })}>
         <Pencil size={17} />
@@ -1616,6 +1667,16 @@ function Notifications({ state, today, open }: { state: AppState; today: string;
   return (
     <div className="form-stack">
       <p className="section-description">지금 확인하면 좋은 내용이에요.</p>
+      {!!state.inbox?.length && (
+        <Row
+          icon={AlertTriangle}
+          color="yellow"
+          title={`중복이 의심되는 거래 ${state.inbox.length}건`}
+          subtitle="이미 있는 거래인지 확인하고 추가할지 골라주세요."
+          value={<ChevronRight size={17} />}
+          onClick={() => open({ type: 'inbox' })}
+        />
+      )}
       {b.provisional && (
         <Row
           icon={ReceiptText}
@@ -1916,6 +1977,10 @@ function modalTitle(modal: Modal) {
     help: 'flex-able 이용 안내',
     reset: '새로 시작하기',
     demoImport: '예시 내역 시연',
+    csv: 'CSV로 거래 가져오기',
+    inbox: '중복 의심 거래 확인',
+    bankSync: '계좌 내역 업데이트',
+    autoImport: '결제 알림 자동 등록',
     planDetail: '소비 계획',
     transactionDetail: '거래 상세',
     memory: '기억해둘 소비 기준',
