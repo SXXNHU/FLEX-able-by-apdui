@@ -1,23 +1,18 @@
 package com.flexable.ledger;
 
 import java.net.http.HttpResponse;
-import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.ZoneId;
 import java.util.UUID;
 
+import com.flexable.FixedClockConfiguration;
 import com.flexable.Http;
 import com.flexable.TestcontainersConfiguration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
-import org.springframework.context.annotation.Primary;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -25,21 +20,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 원장 규칙을 실제 HTTP · MySQL로 확인한다. 날짜는 클라이언트 Vitest와 같은 2026-09-29(KST)로 고정한다. 테스트마다
  * 다른 사용자를 써서 서로의 데이터에 영향을 주지 않는다.
  */
-@Import({ TestcontainersConfiguration.class, LedgerApiTest.FixedClock.class })
+@Import({ TestcontainersConfiguration.class, FixedClockConfiguration.class })
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = "app.dev-auth.header-enabled=true")
 class LedgerApiTest {
-
-	@TestConfiguration(proxyBeanMethods = false)
-	static class FixedClock {
-
-		@Bean
-		@Primary
-		Clock fixedClock() {
-			return Clock.fixed(Instant.parse("2026-09-29T06:00:00Z"), ZoneId.of("Asia/Seoul"));
-		}
-
-	}
 
 	@LocalServerPort
 	int port;

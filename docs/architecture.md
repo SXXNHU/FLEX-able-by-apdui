@@ -38,20 +38,20 @@ Data           MySQL 8.4
 
 ## API 계약
 
-| 메서드          | 경로                                      | 상태 · 비고                                                                     |
-| --------------- | ----------------------------------------- | ------------------------------------------------------------------------------- |
-| GET · PUT       | `/api/profile`                            | 구현                                                                            |
-| GET             | `/api/budgets/today`                      | 구현. 계산 결과와 미확인 날짜(`pending`)                                        |
-| POST            | `/api/budgets/preview?planId=`            | 구현. 계획 확정 전후 비교 (저장 안 함)                                          |
-| GET · PUT · DEL | `/api/plans`, `/api/plans/{id}`           | 구현. 클라이언트 UUID로 upsert. 실제 사용액 · 남은 확보액 · 정산 여부 포함      |
-| GET             | `/api/plans/estimate?category=`           | 구현. 기록 없으면 204                                                           |
-| GET · PUT · DEL | `/api/fixed-expenses`, `/{id}`            | 구현                                                                            |
-| GET · POST      | `/api/transactions`                       | 구현. POST의 `id`가 멱등 키: 같은 요청 재전송은 200(반영 없음), 다른 내용은 409 |
-| PUT · DEL       | `/api/transactions/{id}`                  | 구현. 수정은 되돌린 뒤 다시 반영 (출처 유지)                                    |
-| GET · POST      | `/api/reconciliations`, `/{date}`         | 구현                                                                            |
-| POST            | `/api/transactions/import-candidates`     | 3b. `source` + 원문 → 후보 + 중복 정보                                          |
-| POST            | `/api/transactions/import`                | 3b. `(user_id, source, source_event_id)` 유일 제약으로 idempotent               |
-| GET             | `/actuator/health/liveness`, `/readiness` | 구현                                                                            |
+| 메서드          | 경로                                      | 상태 · 비고                                                                                                                                                          |
+| --------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET · PUT       | `/api/profile`                            | 구현                                                                                                                                                                 |
+| GET             | `/api/budgets/today`                      | 구현. 계산 결과와 미확인 날짜(`pending`)                                                                                                                             |
+| POST            | `/api/budgets/preview?planId=`            | 구현. 계획 확정 전후 비교 (저장 안 함)                                                                                                                               |
+| GET · PUT · DEL | `/api/plans`, `/api/plans/{id}`           | 구현. 클라이언트 UUID로 upsert. 실제 사용액 · 남은 확보액 · 정산 여부 포함                                                                                           |
+| GET             | `/api/plans/estimate?category=`           | 구현. 기록 없으면 204                                                                                                                                                |
+| GET · PUT · DEL | `/api/fixed-expenses`, `/{id}`            | 구현                                                                                                                                                                 |
+| GET · POST      | `/api/transactions`                       | 구현. POST의 `id`가 멱등 키: 같은 요청 재전송은 200(반영 없음), 다른 내용은 409                                                                                      |
+| PUT · DEL       | `/api/transactions/{id}`                  | 구현. 수정은 되돌린 뒤 다시 반영 (출처 유지)                                                                                                                         |
+| GET · POST      | `/api/reconciliations`, `/{date}`         | 구현                                                                                                                                                                 |
+| POST            | `/api/transactions/import-candidates`     | 구현. `CSV`(디코딩된 텍스트, 열 지정 선택) · `CAPTURE`(OCR 문자) · `NOTIFICATION`(원문) → 후보 + 기존 거래와의 중복 + 같은 요청 안 중복 + 이미 반영 여부             |
+| POST            | `/api/transactions/import`                | 구현. 전부 반영 또는 전부 거절. 확인 안 된 중복은 422 `duplicate_requires_confirmation`(+ `items`). 같은 항목 ID · 같은 `sourceEventId` 재전송은 `replayed`로 건너뜀 |
+| GET             | `/actuator/health/liveness`, `/readiness` | 구현                                                                                                                                                                 |
 
 열거값은 영문 코드다. 카테고리는 `FOOD`(식비) · `CAFE` · `TRANSPORT` · `SHOPPING` · `CULTURE` · `SOCIAL`(약속) · `HOUSING` · `ETC`이고, 거래 종류는 `EXPENSE` · `INCOME` · `REFUND` · `TRANSFER` · `CARD_PAYMENT`, 결제는 `CASH` · `CARD`다.
 
@@ -64,11 +64,12 @@ com.flexable
 ├─ common        설정 · 오류(ProblemDetail) · 스키마 준비(SchemaMigrator, readiness)
 ├─ user          CurrentUser (인증 전: 개발용 고정 사용자)
 ├─ profile       잔액 · 수입일 · 보호액 · 카드 미결제액 설정
-└─ ledger
+├─ ledger
    ├─ domain       Ledger: domain.ts 규칙의 Java 이식 (DB 무관, LedgerTest)
    ├─ persistence  JPA 엔티티 · 저장소 · LedgerStore(사용자 원장 로드, 프로필 행 잠금)
    ├─ application  거래 · 계획 · 고정지출 · 예산 · 정산 서비스
    └─ api          REST 컨트롤러
+└─ importing     원문 → 후보(CSV · 캡처 · 알림 파서), 중복 판정, 멱등 가져오기
 ```
 
 - 계획 · 거래 · 고정지출은 모두 한 사용자의 원장을 함께 보고 판단한다(계획 확보액, 환불 한도, 카드 미결제액). 그래서 기능별 패키지로 나누지 않고 `ledger` 하나로 묶었다.
@@ -97,7 +98,8 @@ com.flexable
 2. **Backend Foundation** (완료): Spring Boot 4.1 · JPA · MySQL · Flyway · Actuator probes · ProblemDetail · CORS · 환경변수 설정 · Testcontainers 테스트 · Docker
 3. **Domain Migration**
    - 3a (완료): 원장 규칙과 API를 구현하고, `domain.test.ts`의 예산 시나리오를 `LedgerTest`로 옮겼다. `LedgerApiTest`는 같은 규칙을 HTTP와 MySQL 위에서 멱등성 · 동시성까지 확인한다.
-   - 3b: 중복 판정, 가져오기 후보 생성, idempotent 가져오기.
+   - 3b (완료): 중복 판정(`DuplicateFinder`)과 CSV · 캡처 · 결제 알림 파서를 이식했다. `imports.test.ts` 시나리오는 `ImportParsersTest`로 옮겼다. 가져오기 API는 서버가 중복을 최종 판정하고 멱등성을 보장한다.
+   - 이식하지 않은 것: `bankRows`(계좌 중계 API 연동 시 서버가 직접 호출하므로 불필요)와 `autoIngest` · 확인 대기함(Phase 7에서 알림 수집 API와 함께 구현).
 4. **인증**: Spring Security + Access Token. `CurrentUser` 구현만 교체한다. Android는 Keystore 기반 저장소를 쓸 수 있게 토큰 저장을 분리한다.
 5. **Frontend API Migration**: API 계층을 도입하고 localStorage를 Source of Truth에서 단계적으로 제외한다. 실사용 데이터가 없어 localStorage 마이그레이션은 만들지 않는다.
 6. **Capacitor**: 기존 React를 Android로 패키징하고 Google · Android 기본 캘린더 연동을 붙인다.

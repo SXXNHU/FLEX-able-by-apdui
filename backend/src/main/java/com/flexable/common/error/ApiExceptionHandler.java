@@ -35,7 +35,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
 	@ExceptionHandler(BusinessRuleException.class)
 	ProblemDetail businessRule(BusinessRuleException ex) {
-		return problem(HttpStatus.UNPROCESSABLE_CONTENT, ex.code(), ex.getMessage());
+		ProblemDetail problem = problem(HttpStatus.UNPROCESSABLE_CONTENT, ex.code(), ex.getMessage());
+		ex.details().forEach(problem::setProperty);
+		return problem;
 	}
 
 	@ExceptionHandler(ConflictException.class)
