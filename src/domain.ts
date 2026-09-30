@@ -108,6 +108,25 @@ export interface Ledger {
   memories: Memory[]
   reconciledDates: string[]
   budget: Budget
+  /** 자동 수집 중 이미 있는 거래 같아 확인을 기다리는 거래 */
+  inbox: InboxItem[]
+}
+export interface InboxItem {
+  id: string
+  title: string
+  amount: number
+  date: string
+  category: Category
+  kind: 'expense' | 'income'
+  method: 'cash' | 'card'
+  source: TransactionSource
+  duplicates: Array<{
+    transactionId: string
+    title: string
+    amount: number
+    date: string
+    source: TransactionSource
+  }>
 }
 export interface Estimate {
   low: number

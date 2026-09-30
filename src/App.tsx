@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
+  AlertTriangle,
   ArrowRight,
   ArrowUpRight,
   Bell,
@@ -69,7 +70,8 @@ import {
   googleCalendarAvailable,
   googleEvents,
 } from './calendar'
-import { isNative } from './native'
+import { FlexNative, isNative } from './native'
+import { paymentNotificationsAvailable, syncPaymentNotifications } from './notificationSync'
 
 type Page = 'home' | 'plans' | 'records' | 'settings'
 type Phase = 'booting' | 'offline' | 'welcome' | 'auth' | 'setup' | 'ready'
@@ -87,6 +89,7 @@ type Modal =
         | 'demoImport'
         | 'csv'
         | 'bankSync'
+        | 'inbox'
     }
   | { type: 'plan'; plan?: Plan }
   | { type: 'planDetail'; plan: PlanView }
@@ -172,6 +175,34 @@ export default function App() {
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' })
   }, [page])
+  // Android 앱: 켜질 때와 다시 화면에 나올 때 기기에 쌓인 결제 알림을 서버로 보낸다.
+  const ready = phase === 'ready'
+  useEffect(() => {
+    if (!paymentNotificationsAvailable || !ready) return
+    let running = false
+    const sync = async () => {
+      if (running || document.visibilityState !== 'visible') return
+      running = true
+      try {
+        const result = await syncPaymentNotifications()
+        if (result && (result.added || result.queued)) {
+          await reload()
+          notify(
+            result.queued
+              ? `결제 알림 ${result.added}건을 기록했어요. ${result.queued}건은 이미 있는 거래 같아 확인이 필요해요.`
+              : `결제 알림 ${result.added}건을 자동으로 기록했어요.`,
+          )
+        }
+      } catch {
+        // 연결되지 않으면 기기 큐에 그대로 두었다가 다음에 보낸다.
+      } finally {
+        running = false
+      }
+    }
+    void sync()
+    document.addEventListener('visibilitychange', sync)
+    return () => document.removeEventListener('visibilitychange', sync)
+  }, [ready, reload, notify])
   // 날짜가 바뀌면 서버 기준으로 다시 계산한 오늘 예산을 받는다.
   useEffect(() => {
     if (!ledger) return
@@ -442,6 +473,15 @@ export default function App() {
               />
             )}
             {modal.type === 'bankSync' && <BankSyncInfo />}
+            {modal.type === 'inbox' && (
+              <InboxReview
+                ledger={ledger}
+                onAccept={(id) => act(() => ledgerApi.acceptInbox(id), '확인한 거래를 추가했어요.')}
+                onDismiss={(id) =>
+                  act(() => ledgerApi.dismissInbox(id), '이미 있는 거래라 추가하지 않았어요.')
+                }
+              />
+            )}
             {modal.type === 'reconcile' && (
               <Reconcile
                 ledger={ledger}
@@ -612,6 +652,15 @@ function HomePage({
             })
           : '아직 확인 전'}
       </p>
+      {ledger.inbox.length > 0 && (
+        <button className="today-plan-banner inbox-banner" onClick={() => open({ type: 'inbox' })}>
+          <AlertTriangle size={19} />
+          <span>
+            이미 있는 거래 같아요<strong>결제 알림 {ledger.inbox.length}건, 추가할지 확인해주세요</strong>
+          </span>
+          <ChevronRight size={18} />
+        </button>
+      )}
       {b.todayPlanned > 0 && (
         <button className="today-plan-banner" onClick={() => navigate('plans')}>
           <Heart size={19} />
@@ -1223,6 +1272,7 @@ function SettingsPage({
       </section>
       <section className="settings-section">
         <h2>정산 알림</h2>
+        {paymentNotificationsAvailable && <PaymentNotificationSetting />}
         <div className="list-row">
           <span className="item-icon blue">
             <Bell size={20} />
@@ -1667,6 +1717,16 @@ function Notifications({ ledger, open }: { ledger: Ledger; open: (m: Modal) => v
   return (
     <div className="form-stack">
       <p className="section-description">지금 확인하면 좋은 내용이에요.</p>
+      {ledger.inbox.length > 0 && (
+        <Row
+          icon={AlertTriangle}
+          color="yellow"
+          title={`중복이 의심되는 결제 알림 ${ledger.inbox.length}건`}
+          subtitle="이미 있는 거래인지 확인하고 추가할지 골라주세요."
+          value={<ChevronRight size={17} />}
+          onClick={() => open({ type: 'inbox' })}
+        />
+      )}
       {b.provisional && (
         <Row
           icon={ReceiptText}
@@ -2008,6 +2068,99 @@ function ResetConfirm({
     </div>
   )
 }
+/** Android 앱 전용: 결제 알림 접근 허용 상태와 설정 열기 */
+function PaymentNotificationSetting() {
+  const [granted, setGranted] = useState<boolean | null>(null)
+  useEffect(() => {
+    const check = () =>
+      void FlexNative.notificationAccessStatus()
+        .then((s) => setGranted(s.granted))
+        .catch(() => setGranted(false))
+    check()
+    // 설정 화면에서 돌아오면 다시 확인한다.
+    document.addEventListener('visibilitychange', check)
+    return () => document.removeEventListener('visibilitychange', check)
+  }, [])
+  return (
+    <>
+      <Row
+        icon={ReceiptText}
+        color="mint"
+        title="결제 알림으로 자동 기록"
+        subtitle={
+          granted
+            ? '카드사 · 은행 결제 알림을 읽어 자동으로 기록하고 있어요'
+            : '알림 접근을 허용하면 결제 알림을 자동으로 기록해요'
+        }
+        value={granted ? '켜짐' : <ChevronRight size={18} />}
+        onClick={() => void FlexNative.openNotificationAccessSettings()}
+      />
+      <p className="field-hint">
+        금액과 결제 관련 단어가 있는 알림만 모아요. 원문은 기록을 만든 뒤 보관하지 않고, 이미 있는 결제 같으면
+        추가하기 전에 물어봐요.
+      </p>
+    </>
+  )
+}
+/** 자동 수집한 결제 중 이미 있는 거래 같아 보류한 것. 사용자가 하나씩 고른다. */
+function InboxReview({
+  ledger,
+  onAccept,
+  onDismiss,
+}: {
+  ledger: Ledger
+  onAccept: (id: string) => Promise<void>
+  onDismiss: (id: string) => Promise<void>
+}) {
+  const [error, setError] = useState('')
+  const run = (task: Promise<void>) => task.catch((e) => setError(errorMessage(e)))
+  if (!ledger.inbox.length) return <p className="info-box">확인할 거래가 없어요.</p>
+  return (
+    <div className="form-stack">
+      <p className="intro-copy">
+        결제 알림으로 가져온 거래 중 이미 등록된 내역과 같아 보이는 건은 바로 반영하지 않고 여기에 모아뒀어요.
+      </p>
+      {ledger.inbox.map((item) => {
+        const match = item.duplicates[0]
+        return (
+          <div className="candidate duplicate" key={item.id}>
+            <div className="inbox-head">
+              <span className="badge amber">{sourceLabels[item.source]}</span>
+              <strong>
+                {item.title} · {won(item.amount)}원
+              </strong>
+              <small>
+                {dateLabel(item.date)} ·{' '}
+                {item.kind === 'income' ? '입금' : item.method === 'card' ? '신용카드' : '계좌 결제'}
+              </small>
+            </div>
+            {match ? (
+              <p className="duplicate-note">
+                <AlertTriangle size={14} />
+                이미 등록됨: {match.title} · {won(match.amount)}원 · {dateLabel(match.date)} (
+                {sourceLabels[match.source]})
+              </p>
+            ) : (
+              <p className="field-hint">겹쳐 보이던 기존 거래가 지금은 없어요.</p>
+            )}
+            <p className="inbox-question">이거 이미 있는 거래인데 추가하시겠어요?</p>
+            <div className="form-columns">
+              <Button variant="secondary" onClick={() => void run(onDismiss(item.id))}>
+                <Trash2 size={16} />
+                이미 있어요
+              </Button>
+              <Button onClick={() => void run(onAccept(item.id))}>
+                <Check size={16} />
+                따로 추가
+              </Button>
+            </div>
+          </div>
+        )
+      })}
+      <ErrorText message={error} />
+    </div>
+  )
+}
 function Help() {
   return (
     <div className="help-content">
@@ -2062,6 +2215,7 @@ function modalTitle(modal: Modal) {
     memory: '기억해둘 소비 기준',
     csv: 'CSV로 거래 가져오기',
     bankSync: '계좌 내역 업데이트',
+    inbox: '중복 의심 거래 확인',
   }[modal.type]
 }
 function downloadFile(name: string, content: string, type: string) {

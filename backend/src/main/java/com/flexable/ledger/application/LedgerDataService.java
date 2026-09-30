@@ -7,6 +7,7 @@ import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
 import java.util.UUID;
 
+import com.flexable.importing.persistence.PendingImportRepository;
 import com.flexable.ledger.domain.Category;
 import com.flexable.ledger.domain.LedgerTransaction;
 import com.flexable.ledger.domain.PaymentMethod;
@@ -47,9 +48,12 @@ public class LedgerDataService {
 
 	private final Clock clock;
 
+	private final PendingImportRepository pendingImports;
+
 	LedgerDataService(ProfileRepository profiles, FixedExpenseRepository fixed, PlanRepository plans,
 			TransactionRepository transactions, ReconciledDateRepository reconciled, MemoryRepository memories,
-			Clock clock) {
+			Clock clock, PendingImportRepository pendingImports) {
+		this.pendingImports = pendingImports;
 		this.profiles = profiles;
 		this.fixed = fixed;
 		this.plans = plans;
@@ -100,6 +104,7 @@ public class LedgerDataService {
 		plans.deleteAllByUserId(userId);
 		fixed.deleteAllByUserId(userId);
 		memories.deleteAllByUserId(userId);
+		pendingImports.deleteAllByUserId(userId);
 		profiles.deleteById(userId);
 	}
 

@@ -1,11 +1,13 @@
 import { ApiError, applyTokens, request, setAccessToken, type TokenResponse } from './client'
 import { tokenStore } from './tokenStore'
+import type { RawNotification } from '../native'
 import type {
   Budget,
   Category,
   Estimate,
   Fixed,
   FixedView,
+  InboxItem,
   Ledger,
   Memory,
   Plan,
@@ -136,6 +138,14 @@ export const auth = {
   },
 }
 
+type ServerInboxItem = Omit<InboxItem, 'category' | 'kind' | 'method' | 'source' | 'duplicates'> & {
+  category: string
+  kind: string
+  method: string
+  source: string
+  duplicates: ServerDuplicate[]
+}
+
 /* ───────── 데이터 불러오기 ───────── */
 
 /** 예산 설정 전이면 null */
@@ -147,13 +157,14 @@ export async function loadLedger(me: Me): Promise<Ledger | null> {
     if (e instanceof ApiError && e.status === 404) return null
     throw e
   }
-  const [budget, plans, fixed, transactions, reconciliations, memories] = await Promise.all([
+  const [budget, plans, fixed, transactions, reconciliations, memories, inbox] = await Promise.all([
     request<Budget>('GET', '/api/budgets/today'),
     request<ServerPlan[]>('GET', '/api/plans'),
     request<FixedView[]>('GET', '/api/fixed-expenses'),
     request<ServerTransaction[]>('GET', '/api/transactions'),
     request<{ reconciledDates: string[] }>('GET', '/api/reconciliations'),
     request<Memory[]>('GET', '/api/memories'),
+    request<ServerInboxItem[]>('GET', '/api/inbox'),
   ])
   return {
     profile: {
@@ -177,6 +188,14 @@ export async function loadLedger(me: Me): Promise<Ledger | null> {
     memories,
     reconciledDates: reconciliations.reconciledDates,
     budget,
+    inbox: inbox.map((i) => ({
+      ...i,
+      category: categoryCode.fromServer[i.category],
+      kind: kindCode.fromServer[i.kind] as InboxItem['kind'],
+      method: methodCode.fromServer[i.method],
+      source: sourceCode.fromServer[i.source],
+      duplicates: i.duplicates.map(toDuplicate),
+    })),
   }
 }
 
@@ -283,6 +302,14 @@ export const ledgerApi = {
   saveMemory: (m: Memory) => request('PUT', `/api/memories/${m.id}`, { title: m.title, text: m.text }),
   deleteMemory: (id: string) => request('DELETE', `/api/memories/${id}`),
   reset: () => request('DELETE', '/api/ledger'),
+  acceptInbox: (id: string) => request('POST', `/api/inbox/${id}/accept`),
+  dismissInbox: (id: string) => request('DELETE', `/api/inbox/${id}`),
+}
+
+export type IngestResult = { processed: string[]; added: number; queued: number; ignored: number }
+export const notificationsApi = {
+  ingest: (notifications: RawNotification[]) =>
+    request<IngestResult>('POST', '/api/notifications/ingest', { notifications }),
 }
 
 /* ───────── 가져오기 (CSV · 캡처) ───────── */

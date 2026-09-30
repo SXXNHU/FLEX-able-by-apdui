@@ -211,3 +211,71 @@ test('계획을 Google 캘린더에 추가하고, 캘린더 파일 일정을 미
   await page.getByRole('button', { name: '선택 일정 불러오기' }).click()
   await expect(page.getByRole('button', { name: /미확정 동창 모임/ })).toBeVisible()
 })
+
+test('결제 알림이 이미 있는 거래 같으면 확인 대기함에서 추가할지 고른다', async ({ page, request }) => {
+  // 기기(Android 앱) 역할: 같은 계정으로 로그인해 알림 원문을 보낸다.
+  const api = 'http://localhost:18080'
+  const email = uniqueEmail()
+  const signup = await request.post(`${api}/api/auth/signup`, {
+    data: { email, password: 'password-1234', client: 'NATIVE' },
+  })
+  const headers = { Authorization: `Bearer ${(await signup.json()).accessToken}` }
+  const today = await localDate(page)
+  await request.put(`${api}/api/profile`, {
+    headers,
+    data: {
+      name: '알림',
+      balance: 300000,
+      incomeDate: await localDate(page, 10),
+      incomeAmount: 0,
+      protectedAmount: 0,
+      protectionCycle: 'THIS_PERIOD',
+      cardOutstanding: 0,
+    },
+  })
+  await request.post(`${api}/api/transactions`, {
+    headers,
+    data: {
+      title: '김밥천국 강남점',
+      amount: 8000,
+      date: today,
+      category: 'FOOD',
+      kind: 'EXPENSE',
+      source: 'CAPTURE',
+    },
+  })
+  const [, month, day] = today.split('-')
+  const ingest = await request.post(`${api}/api/notifications/ingest`, {
+    headers,
+    data: {
+      notifications: [
+        {
+          id: 'e2e-1',
+          packageName: 'com.card',
+          title: '',
+          text: `우리체크카드 승인 8,000원 ${month}/${day} 12:00 김밥천국`,
+          bigText: '',
+          postedAt: Date.now(),
+        },
+      ],
+    },
+  })
+  expect(await ingest.json()).toMatchObject({ processed: ['e2e-1'], queued: 1 })
+
+  await page.goto('/')
+  await page.getByRole('button', { name: '내 생활비 알아보기' }).click()
+  await page.getByRole('button', { name: '로그인', exact: true }).first().click()
+  await page.getByRole('textbox', { name: '이메일' }).fill(email)
+  await page.getByLabel('비밀번호').fill('password-1234')
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^로그인/ })
+    .last()
+    .click()
+  await page.getByRole('button', { name: /이미 있는 거래 같아요/ }).click()
+  await expect(page.getByText('이거 이미 있는 거래인데 추가하시겠어요?')).toBeVisible()
+  await expect(page.locator('.duplicate-note')).toContainText('김밥천국 강남점')
+  await page.getByRole('button', { name: '이미 있어요' }).click()
+  await expect(page.getByRole('button', { name: /이미 있는 거래 같아요/ })).toHaveCount(0)
+  await expect(page.locator('.hero-amount')).toContainText('22,000')
+})

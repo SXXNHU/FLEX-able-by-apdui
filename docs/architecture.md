@@ -38,26 +38,28 @@ Data           MySQL 8.4
 
 ## API 계약
 
-| 메서드          | 경로                                      | 상태 · 비고                                                                                                                                                          |
-| --------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET · PUT       | `/api/profile`                            | 구현                                                                                                                                                                 |
-| GET             | `/api/budgets/today`                      | 구현. 계산 결과와 미확인 날짜(`pending`)                                                                                                                             |
-| POST            | `/api/budgets/preview?planId=`            | 구현. 계획 확정 전후 비교 (저장 안 함)                                                                                                                               |
-| GET · PUT · DEL | `/api/plans`, `/api/plans/{id}`           | 구현. 클라이언트 UUID로 upsert. 실제 사용액 · 남은 확보액 · 정산 여부 포함                                                                                           |
-| GET             | `/api/plans/estimate?category=`           | 구현. 기록 없으면 204                                                                                                                                                |
-| GET · PUT · DEL | `/api/fixed-expenses`, `/{id}`            | 구현                                                                                                                                                                 |
-| GET · POST      | `/api/transactions`                       | 구현. POST의 `id`가 멱등 키: 같은 요청 재전송은 200(반영 없음), 다른 내용은 409                                                                                      |
-| PUT · DEL       | `/api/transactions/{id}`                  | 구현. 수정은 되돌린 뒤 다시 반영 (출처 유지)                                                                                                                         |
-| GET · POST      | `/api/reconciliations`, `/{date}`         | 구현                                                                                                                                                                 |
-| POST            | `/api/transactions/import-candidates`     | 구현. `CSV`(디코딩된 텍스트, 열 지정 선택) · `CAPTURE`(OCR 문자) · `NOTIFICATION`(원문) → 후보 + 기존 거래와의 중복 + 같은 요청 안 중복 + 이미 반영 여부             |
-| POST            | `/api/transactions/import`                | 구현. 전부 반영 또는 전부 거절. 확인 안 된 중복은 422 `duplicate_requires_confirmation`(+ `items`). 같은 항목 ID · 같은 `sourceEventId` 재전송은 `replayed`로 건너뜀 |
-| GET             | `/actuator/health/liveness`, `/readiness` | 구현                                                                                                                                                                 |
-| POST            | `/api/budgets/simulate`                   | 구현. 저장 전 입력값으로 계산 (설정 화면)                                                                                                                            |
-| POST            | `/api/transactions/duplicates`            | 구현. 직접 입력 전 같은 결제 확인                                                                                                                                    |
-| GET · PUT · DEL | `/api/memories`, `/{id}`                  | 구현. 소비 기준 메모                                                                                                                                                 |
-| PUT             | `/api/profile/settings`                   | 구현. 정산 알림 설정                                                                                                                                                 |
-| DELETE          | `/api/ledger`                             | 구현. 예산 설정과 모든 기록 초기화 (계정 유지)                                                                                                                       |
-| POST            | `/api/auth/guest`                         | 구현. 가입 없이 둘러보기 (`demo: true`면 시연 데이터, IP당 시간당 제한)                                                                                              |
+| 메서드           | 경로                                      | 상태 · 비고                                                                                                                                                          |
+| ---------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET · PUT        | `/api/profile`                            | 구현                                                                                                                                                                 |
+| GET              | `/api/budgets/today`                      | 구현. 계산 결과와 미확인 날짜(`pending`)                                                                                                                             |
+| POST             | `/api/budgets/preview?planId=`            | 구현. 계획 확정 전후 비교 (저장 안 함)                                                                                                                               |
+| GET · PUT · DEL  | `/api/plans`, `/api/plans/{id}`           | 구현. 클라이언트 UUID로 upsert. 실제 사용액 · 남은 확보액 · 정산 여부 포함                                                                                           |
+| GET              | `/api/plans/estimate?category=`           | 구현. 기록 없으면 204                                                                                                                                                |
+| GET · PUT · DEL  | `/api/fixed-expenses`, `/{id}`            | 구현                                                                                                                                                                 |
+| GET · POST       | `/api/transactions`                       | 구현. POST의 `id`가 멱등 키: 같은 요청 재전송은 200(반영 없음), 다른 내용은 409                                                                                      |
+| PUT · DEL        | `/api/transactions/{id}`                  | 구현. 수정은 되돌린 뒤 다시 반영 (출처 유지)                                                                                                                         |
+| GET · POST       | `/api/reconciliations`, `/{date}`         | 구현                                                                                                                                                                 |
+| POST             | `/api/transactions/import-candidates`     | 구현. `CSV`(디코딩된 텍스트, 열 지정 선택) · `CAPTURE`(OCR 문자) · `NOTIFICATION`(원문) → 후보 + 기존 거래와의 중복 + 같은 요청 안 중복 + 이미 반영 여부             |
+| POST             | `/api/transactions/import`                | 구현. 전부 반영 또는 전부 거절. 확인 안 된 중복은 422 `duplicate_requires_confirmation`(+ `items`). 같은 항목 ID · 같은 `sourceEventId` 재전송은 `replayed`로 건너뜀 |
+| GET              | `/actuator/health/liveness`, `/readiness` | 구현                                                                                                                                                                 |
+| POST             | `/api/budgets/simulate`                   | 구현. 저장 전 입력값으로 계산 (설정 화면)                                                                                                                            |
+| POST             | `/api/transactions/duplicates`            | 구현. 직접 입력 전 같은 결제 확인                                                                                                                                    |
+| GET · PUT · DEL  | `/api/memories`, `/{id}`                  | 구현. 소비 기준 메모                                                                                                                                                 |
+| PUT              | `/api/profile/settings`                   | 구현. 정산 알림 설정                                                                                                                                                 |
+| DELETE           | `/api/ledger`                             | 구현. 예산 설정과 모든 기록 초기화 (계정 유지)                                                                                                                       |
+| POST             | `/api/notifications/ingest`               | 구현. 기기 알림 원문 → 자동 반영 · 확인 대기 · 무시. 응답의 `processed`만 기기 큐에서 ACK                                                                            |
+| GET · POST · DEL | `/api/inbox`, `/{id}/accept`, `/{id}`     | 구현. 확인 대기함 조회 · 따로 추가 · 이미 있어요(버린 알림은 다시 와도 되살리지 않음)                                                                                |
+| POST             | `/api/auth/guest`                         | 구현. 가입 없이 둘러보기 (`demo: true`면 시연 데이터, IP당 시간당 제한)                                                                                              |
 
 열거값은 영문 코드다. 카테고리는 `FOOD`(식비) · `CAFE` · `TRANSPORT` · `SHOPPING` · `CULTURE` · `SOCIAL`(약속) · `HOUSING` · `ETC`이고, 거래 종류는 `EXPENSE` · `INCOME` · `REFUND` · `TRANSFER` · `CARD_PAYMENT`, 결제는 `CASH` · `CARD`다.
 
@@ -144,8 +146,15 @@ com.flexable
    - 클라이언트에 남은 것: 표시 · 날짜 유틸, 자연어 계획 · `.ics` 파싱(저장 전 사용자 확인), CSV 인코딩 판별, 브라우저 OCR.
    - 서버에 추가한 것: 게스트 둘러보기(시연 데이터), 메모, 알림 설정, 직접 입력용 중복 조회, 설정 화면용 예산 미리 계산(`/api/budgets/simulate`), 전체 초기화.
    - E2E는 실제 백엔드 · MySQL로 실행한다. 실사용 localStorage 데이터가 없어 마이그레이션은 만들지 않았다.
-6. **Capacitor**: 기존 React를 Android로 패키징하고 Google · Android 기본 캘린더 연동을 붙인다.
-7. **Notification Import**:
-   - `NotificationListenerService`는 raw 알림(id, packageName, title, text, bigText, postedAt)만 Native Queue에 저장한다.
-   - 앱이 켜지면 Plugin → React → Spring Import API 순서로 전달하고, 서버 저장이 성공한 뒤에만 ACK한다.
-   - 금액과 가맹점 판단은 서버가 한다.
+6. **Capacitor** (완료)
+   - `android/`: Capacitor 8 (minSdk 24, target 36)이다. 네이티브 플러그인 `FlexNative`는 기기 기능만 노출한다.
+   - 보안 저장소: Android Keystore AES-GCM. 앱의 Refresh Token을 보관한다.
+   - 기기 캘린더: 동기화된 Google 캘린더를 포함해 읽는다. 일정 추가는 캘린더 앱의 추가 화면을 연다.
+   - 웹은 Google 캘린더 추가 링크와, 클라이언트 ID가 있으면 Google Calendar API 읽기 전용 가져오기를 쓴다.
+   - CI가 디버그 APK를 빌드하고 lint를 돌린다.
+7. **Notification Import** (완료)
+   - `PaymentNotificationListener`는 금액과 결제 단어가 있는 알림의 원문(id, packageName, title, text, bigText, postedAt)만 네이티브 큐에 넣는다. id는 알림 키와 게시 시각의 해시다.
+   - 앱이 켜지거나 화면에 돌아오면 큐를 `/api/notifications/ingest`로 보낸다. 서버가 해석하고, 중복 판정 후 자동 반영하거나 확인 대기함에 넣는다.
+   - 응답의 `processed`만 큐에서 ACK하므로, 전송이 실패하면 다음에 다시 보낸다.
+   - 멱등성은 `(user_id, source, source_event_id)` 유일 제약(거래 · 대기함)으로 보장한다.
+   - 알림 원문은 저장하지 않는다.
