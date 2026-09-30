@@ -25,8 +25,8 @@ class ProfileApiTest {
 
 	@BeforeEach
 	void waitUntilReady() {
-		http = new Http(port);
-		http.await("/actuator/health/readiness", (r) -> r.statusCode() == 200, Duration.ofSeconds(60));
+		new Http(port).await("/actuator/health/readiness", (r) -> r.statusCode() == 200, Duration.ofSeconds(60));
+		http = Http.signedUp(port);
 	}
 
 	static String profile(LocalDate incomeDate) {

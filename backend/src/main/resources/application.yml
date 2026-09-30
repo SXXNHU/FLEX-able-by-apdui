@@ -67,8 +67,19 @@ app:
   schema:
     retry-initial-delay: ${SCHEMA_RETRY_INITIAL_DELAY:2s}
     retry-max-delay: ${SCHEMA_RETRY_MAX_DELAY:30s}
-  # 인증 도입 전까지 모든 요청은 이 개발용 사용자로 처리한다.
-  dev-user-id: ${DEV_USER_ID:00000000-0000-0000-0000-000000000001}
-  dev-auth:
-    # true면 X-Dev-User-Id 헤더로 사용자를 바꿀 수 있다. 테스트 격리용이며 운영에서는 끈다.
-    header-enabled: ${DEV_AUTH_HEADER_ENABLED:false}
+  auth:
+    # Base64 HMAC-SHA256 키 (32바이트 이상). 운영에서는 반드시 지정한다: openssl rand -base64 32
+    # 비우면 실행할 때마다 임시 키를 만들어서, 재시작하면 모든 access token이 무효가 된다.
+    jwt-secret: ${AUTH_JWT_SECRET:}
+    issuer: ${AUTH_ISSUER:flex-able}
+    access-token-ttl: ${AUTH_ACCESS_TOKEN_TTL:15m}
+    refresh-token-ttl: ${AUTH_REFRESH_TOKEN_TTL:30d}
+    refresh-cookie:
+      name: flexable_refresh
+      # localhost는 http여도 브라우저가 Secure 쿠키를 허용한다.
+      secure: ${AUTH_COOKIE_SECURE:true}
+      # 프론트와 API가 같은 사이트(포트만 다른 localhost 포함)면 Lax, 다른 사이트면 None(+ Secure)
+      same-site: ${AUTH_COOKIE_SAME_SITE:Lax}
+    login-throttle:
+      max-failures: 5
+      lock-duration: 15m

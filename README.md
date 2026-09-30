@@ -40,7 +40,8 @@ cd backend && ./gradlew test         # Testcontainers로 MySQL을 띄워 테스�
 - `GET /actuator/health/liveness`: 프로세스 생존 여부
 - `GET /actuator/health/readiness`: DB 연결과 스키마 준비 여부
 - DB가 없으면 백엔드는 떠 있지만 readiness가 DOWN이고, API는 `503`과 `Retry-After`를 돌려줍니다. DB가 준비되면 재시작 없이 정상화됩니다.
-- 설정은 환경변수(`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `CORS_ALLOWED_ORIGINS`, `SERVER_PORT`)로 바꾸며, compose용 값은 `.env.example`에 있습니다.
+- 설정은 환경변수(`DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `CORS_ALLOWED_ORIGINS`, `SERVER_PORT`, `AUTH_JWT_SECRET`)로 바꾸며, compose용 값은 `.env.example`에 있습니다.
+- `/api/auth/*`를 제외한 모든 API는 로그인이 필요합니다. 이메일과 비밀번호로 가입하면 15분짜리 Access Token과 30일짜리 Refresh Token을 받습니다. 운영에서는 `AUTH_JWT_SECRET`(`openssl rand -base64 32`)을 반드시 지정해야 합니다.
 
 ## 화면과 기능
 

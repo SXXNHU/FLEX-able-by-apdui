@@ -21,8 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 다른 사용자를 써서 서로의 데이터에 영향을 주지 않는다.
  */
 @Import({ TestcontainersConfiguration.class, FixedClockConfiguration.class })
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-		properties = "app.dev-auth.header-enabled=true")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class LedgerApiTest {
 
 	@LocalServerPort
@@ -33,7 +32,7 @@ class LedgerApiTest {
 	@BeforeEach
 	void setUp() {
 		new Http(port).await("/actuator/health/readiness", (r) -> r.statusCode() == 200, Duration.ofSeconds(60));
-		http = new Http(port, UUID.randomUUID().toString());
+		http = Http.signedUp(port);
 		HttpResponse<String> profile = http.put("/api/profile", """
 				{"name":"테스트","balance":300000,"incomeDate":"2026-10-09","incomeAmount":2800000,
 				 "protectedAmount":0,"protectionCycle":"THIS_PERIOD","cardOutstanding":0}""");
@@ -196,7 +195,7 @@ class LedgerApiTest {
 	void 다른_사용자의_데이터는_보이지_않는다() {
 		String id = UUID.randomUUID().toString();
 		http.post("/api/transactions", tx(id, 10_000, ""));
-		Http other = new Http(port, UUID.randomUUID().toString());
+		Http other = Http.signedUp(port);
 		assertThat(other.get("/api/budgets/today").statusCode()).isEqualTo(404);
 		assertThat(other.delete("/api/transactions/" + id).statusCode()).isEqualTo(404);
 	}

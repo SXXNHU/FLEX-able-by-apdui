@@ -62,7 +62,8 @@ Data           MySQL 8.4
 ```text
 com.flexable
 ├─ common        설정 · 오류(ProblemDetail) · 스키마 준비(SchemaMigrator, readiness)
-├─ user          CurrentUser (인증 전: 개발용 고정 사용자)
+├─ auth          Spring Security 설정, 가입 · 로그인 · 토큰 발급과 교체, JwtCurrentUser
+├─ user          사용자 엔티티, CurrentUser 인터페이스
 ├─ profile       잔액 · 수입일 · 보호액 · 카드 미결제액 설정
 ├─ ledger
    ├─ domain       Ledger: domain.ts 규칙의 Java 이식 (DB 무관, LedgerTest)
@@ -74,6 +75,34 @@ com.flexable
 
 - 계획 · 거래 · 고정지출은 모두 한 사용자의 원장을 함께 보고 판단한다(계획 확보액, 환불 한도, 카드 미결제액). 그래서 기능별 패키지로 나누지 않고 `ledger` 하나로 묶었다.
 - 쓰기 작업은 모두 프로필 행을 `SELECT … FOR UPDATE`로 잠근 뒤 원장을 읽는다. 같은 사용자의 동시 요청은 이 잠금으로 줄을 서므로 잔액 변경이 유실되지 않는다.
+
+## 인증
+
+| 메서드 | 경로                | 설명                                                                   |
+| ------ | ------------------- | ---------------------------------------------------------------------- |
+| POST   | `/api/auth/signup`  | `{email, password, client}` → 201 + 토큰 (이미 가입된 이메일은 409)    |
+| POST   | `/api/auth/login`   | 실패는 항상 401 `invalid_credentials`. 5번 연속 실패하면 15분 동안 429 |
+| POST   | `/api/auth/refresh` | Refresh Token 교체. 새 Access · Refresh Token을 준다                   |
+| POST   | `/api/auth/logout`  | 이 로그인에서 나온 Refresh Token을 모두 무효화하고 쿠키를 지운다       |
+| GET    | `/api/auth/me`      | 현재 사용자                                                            |
+
+- **Access Token**
+  - HS256 JWT이고 유효 시간은 15분이다. `sub`가 사용자 ID다.
+  - 요청마다 서명과 만료만 검사하므로 DB 장애 중에도 인증이 동작한다. 이때 데이터 API는 401이 아니라 503을 반환한다.
+  - 클라이언트는 메모리에만 보관한다.
+- **Refresh Token**
+  - 무작위 256비트 값이고 DB에는 SHA-256 해시만 저장한다.
+  - 쓸 때마다 새 값으로 교체한다. 이미 교체된 토큰이 다시 오면 탈취로 보고 같은 로그인의 토큰을 전부 무효화한다.
+  - 클라이언트는 갱신 요청을 한 번에 하나만 보내야 한다. 두 탭이 같은 토큰으로 동시에 갱신하면 재사용으로 판정돼 로그아웃된다.
+- **Refresh Token 전달 방식** (`client`)
+  - `WEB`: `HttpOnly; Secure; SameSite=Lax; Path=/api/auth` 쿠키로만 주고받아 스크립트가 읽을 수 없다. 요청은 `credentials: 'include'`로 보낸다.
+  - `NATIVE`: 응답 본문으로 준다. Android 앱은 Keystore 기반 보안 저장소에 둔다.
+  - 장기 자격 증명은 어느 경우에도 localStorage에 두지 않는다.
+- **CSRF**
+  - 쿠키는 `/api/auth` 경로에만 전송되고 SameSite=Lax다.
+  - refresh는 JSON 본문을 요구하므로 교차 사이트 폼으로 호출할 수 없다.
+  - 그 외 API는 쿠키가 아니라 Bearer 헤더로 인증하므로 CSRF 대상이 아니다.
+- **한계**: 로그인 시도 제한은 인스턴스 메모리에 둔다. 백엔드를 여러 대로 늘리면 공유 저장소로 옮겨야 한다.
 
 ## 독립 실행 · 실행 순서 무관
 
@@ -100,7 +129,7 @@ com.flexable
    - 3a (완료): 원장 규칙과 API를 구현하고, `domain.test.ts`의 예산 시나리오를 `LedgerTest`로 옮겼다. `LedgerApiTest`는 같은 규칙을 HTTP와 MySQL 위에서 멱등성 · 동시성까지 확인한다.
    - 3b (완료): 중복 판정(`DuplicateFinder`)과 CSV · 캡처 · 결제 알림 파서를 이식했다. `imports.test.ts` 시나리오는 `ImportParsersTest`로 옮겼다. 가져오기 API는 서버가 중복을 최종 판정하고 멱등성을 보장한다.
    - 이식하지 않은 것: `bankRows`(계좌 중계 API 연동 시 서버가 직접 호출하므로 불필요)와 `autoIngest` · 확인 대기함(Phase 7에서 알림 수집 API와 함께 구현).
-4. **인증**: Spring Security + Access Token. `CurrentUser` 구현만 교체한다. Android는 Keystore 기반 저장소를 쓸 수 있게 토큰 저장을 분리한다.
+4. **인증** (완료): 아래 "인증" 절 참고. 개발용 고정 사용자와 `X-Dev-User-Id` 헤더는 제거했다.
 5. **Frontend API Migration**: API 계층을 도입하고 localStorage를 Source of Truth에서 단계적으로 제외한다. 실사용 데이터가 없어 localStorage 마이그레이션은 만들지 않는다.
 6. **Capacitor**: 기존 React를 Android로 패키징하고 Google · Android 기본 캘린더 연동을 붙인다.
 7. **Notification Import**:
