@@ -2,6 +2,8 @@
  * 모든 서버 호출이 거치는 공통 계층. 주소 결정, 타임아웃, 오류 형식(ProblemDetail), 연결 상태, 토큰 갱신을 여기서만 다룬다.
  * UI 컴포넌트는 fetch를 직접 부르지 않는다.
  */
+import { isNative } from '../native'
+import { tokenStore } from './tokenStore'
 
 export type ConnectionStatus = 'online' | 'offline' | 'unavailable'
 
@@ -29,6 +31,8 @@ const signedOutListeners = new Set<() => void>()
 /**
  * API 주소: 배포 시 주입하는 /config.json → 빌드 환경변수 VITE_API_BASE_URL → 같은 호스트의 8080 포트.
  * 프론트와 백엔드를 따로 배포해도 다시 빌드하지 않고 주소만 바꿀 수 있다.
+ * Android 앱은 WebView(https://localhost)에서 실행되므로 빌드 시 VITE_API_BASE_URL을 넣는다. 넣지 않으면
+ * 에뮬레이터에서 개발 PC를 가리키는 10.0.2.2:8080을 쓴다.
  */
 export async function loadConfig(): Promise<string> {
   if (baseUrl) return baseUrl
@@ -44,7 +48,7 @@ export async function loadConfig(): Promise<string> {
   baseUrl = (
     configured ||
     (import.meta.env.VITE_API_BASE_URL as string | undefined) ||
-    `${location.protocol}//${location.hostname}:8080`
+    (isNative ? 'http://10.0.2.2:8080' : `${location.protocol}//${location.hostname}:8080`)
   ).replace(/\/$/, '')
   return baseUrl
 }
@@ -151,26 +155,45 @@ async function toError(response: Response): Promise<ApiError> {
   )
 }
 
-export type TokenResponse = { accessToken: string; expiresIn: number; userId: string }
+export type TokenResponse = {
+  accessToken: string
+  expiresIn: number
+  userId: string
+  refreshToken?: string | null
+}
+
+/** 로그인 · 갱신 응답을 반영한다. 앱은 새 Refresh Token을 보안 저장소에 바꿔 넣는다. */
+export async function applyTokens(tokens: TokenResponse) {
+  setAccessToken(tokens.accessToken)
+  if (tokens.refreshToken) await tokenStore.save(tokens.refreshToken)
+}
 
 /**
- * Refresh 쿠키로 새 Access Token을 받는다. 동시에 여러 요청이 401을 받아도 갱신은 한 번만 한다.
- * (같은 Refresh Token을 두 번 쓰면 서버가 탈취로 보고 로그인을 끊는다.)
+ * Refresh Token(웹: 쿠키, 앱: 보안 저장소)으로 새 Access Token을 받는다. 동시에 여러 요청이 401을 받아도 갱신은
+ * 한 번만 한다. (같은 Refresh Token을 두 번 쓰면 서버가 탈취로 보고 로그인을 끊는다.)
  */
 export function refreshAccessToken(): Promise<boolean> {
-  refreshing ??= request<TokenResponse>('POST', '/api/auth/refresh', { client: 'WEB' }, { auth: false })
-    .then((t) => {
-      setAccessToken(t.accessToken)
+  refreshing ??= (async () => {
+    const stored = await tokenStore.load()
+    if (tokenStore.client === 'NATIVE' && !stored) return false
+    try {
+      const tokens = await request<TokenResponse>(
+        'POST',
+        '/api/auth/refresh',
+        { client: tokenStore.client, refreshToken: stored ?? undefined },
+        { auth: false },
+      )
+      await applyTokens(tokens)
       return true
-    })
-    .catch((e: unknown) => {
+    } catch (e) {
       if (e instanceof ApiError && e.status === 0) throw e
       setAccessToken(null)
+      await tokenStore.clear()
       return false
-    })
-    .finally(() => {
-      refreshing = null
-    })
+    }
+  })().finally(() => {
+    refreshing = null
+  })
   return refreshing
 }
 

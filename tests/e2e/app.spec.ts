@@ -49,7 +49,11 @@ test('가입부터 예산 설정, 로그아웃 후 다시 로그인까지', asyn
   await page.getByRole('button', { name: '로그인', exact: true }).first().click()
   await page.getByRole('textbox', { name: '이메일' }).fill(email)
   await page.getByLabel('비밀번호').fill('password-1234')
-  await page.locator('form').getByRole('button', { name: /^로그인/ }).last().click()
+  await page
+    .locator('form')
+    .getByRole('button', { name: /^로그인/ })
+    .last()
+    .click()
   await expect(page.locator('.hero-amount')).toContainText('30,000')
 })
 
@@ -125,7 +129,10 @@ test('CSV 업로드 버튼은 캡처로 정산 왼쪽에 있고, 파일 거래�
   await page.getByLabel('CSV 파일 선택').setInputFiles({
     name: 'bank.csv',
     mimeType: 'text/csv',
-    buffer: Buffer.from(`거래내역,,,\n거래일시,적요,출금액,입금액\n${today} 12:00,김밥천국,"8,000",0\n`, 'utf8'),
+    buffer: Buffer.from(
+      `거래내역,,,\n거래일시,적요,출금액,입금액\n${today} 12:00,김밥천국,"8,000",0\n`,
+      'utf8',
+    ),
   })
   await expect(page.getByRole('textbox', { name: '상호 · 이름' })).toHaveValue('김밥천국')
   await page.getByRole('checkbox', { name: /날짜·금액·중복과 거래 구분을 확인했어요/ }).check()
@@ -170,4 +177,37 @@ test('서버에 연결할 수 없어도 앱은 뜨고 다시 연결할 수 있�
   await page.unroute(/:18080\//)
   await page.getByRole('button', { name: '다시 연결하기' }).click()
   await expect(page.getByRole('button', { name: '먼저 둘러볼게요' })).toBeVisible()
+})
+
+test('계획을 Google 캘린더에 추가하고, 캘린더 파일 일정을 미확정 계획으로 불러온다', async ({ page }) => {
+  await demo(page)
+  await page.getByRole('navigation').getByRole('button', { name: '소비 계획' }).click()
+  await page.getByRole('button', { name: /토요일, 저녁과 영화/ }).click()
+  // 외부 사이트(로그인 리다이렉트)에 의존하지 않도록 앱이 연 주소만 확인한다.
+  let requested = ''
+  await page.context().route('https://calendar.google.com/**', (route) => {
+    requested = route.request().url()
+    return route.fulfill({ body: 'ok' })
+  })
+  const popup = page.waitForEvent('popup')
+  await page.getByRole('button', { name: 'Google 캘린더에 추가' }).click()
+  const opened = await popup
+  await expect.poll(() => requested).toContain('calendar.google.com/calendar/render')
+  const params = new URL(requested).searchParams
+  expect(params.get('action')).toBe('TEMPLATE')
+  expect(params.get('text')).toBe('토요일, 저녁과 영화')
+  await opened.close()
+  await page.getByRole('button', { name: '닫기' }).click()
+
+  const date = (await localDate(page, 5)).replaceAll('-', '')
+  await page.getByRole('button', { name: '캘린더 파일 불러오기' }).click()
+  await page.getByLabel('캘린더 파일 선택').setInputFiles({
+    name: 'events.ics',
+    mimeType: 'text/calendar',
+    buffer: Buffer.from(
+      `BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:${date}\nSUMMARY:동창 모임\nEND:VEVENT\nEND:VCALENDAR`,
+    ),
+  })
+  await page.getByRole('button', { name: '선택 일정 불러오기' }).click()
+  await expect(page.getByRole('button', { name: /미확정 동창 모임/ })).toBeVisible()
 })

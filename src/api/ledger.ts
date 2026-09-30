@@ -1,4 +1,5 @@
-import { ApiError, request, setAccessToken, type TokenResponse } from './client'
+import { ApiError, applyTokens, request, setAccessToken, type TokenResponse } from './client'
+import { tokenStore } from './tokenStore'
 import type {
   Budget,
   Category,
@@ -111,8 +112,13 @@ export const toTransaction = (t: ServerTransaction): Transaction => ({
 export type Me = { id: string; email: string | null; guest: boolean }
 
 async function signIn(path: string, body: object) {
-  const tokens = await request<TokenResponse>('POST', path, { ...body, client: 'WEB' }, { auth: false })
-  setAccessToken(tokens.accessToken)
+  const tokens = await request<TokenResponse>(
+    'POST',
+    path,
+    { ...body, client: tokenStore.client },
+    { auth: false },
+  )
+  await applyTokens(tokens)
 }
 export const auth = {
   signup: (email: string, password: string) => signIn('/api/auth/signup', { email, password }),
@@ -121,9 +127,11 @@ export const auth = {
   me: () => request<Me>('GET', '/api/auth/me'),
   logout: async () => {
     try {
-      await request<void>('POST', '/api/auth/logout', {}, { auth: false })
+      const refreshToken = await tokenStore.load()
+      await request<void>('POST', '/api/auth/logout', refreshToken ? { refreshToken } : {}, { auth: false })
     } finally {
       setAccessToken(null)
+      await tokenStore.clear()
     }
   },
 }
