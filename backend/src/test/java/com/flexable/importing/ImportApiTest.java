@@ -18,8 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /** 원문 → 후보 → 확인 → 반영. 중복 확인과 재전송 멱등성을 서버가 보장하는지 확인한다. */
 @Import({ TestcontainersConfiguration.class, FixedClockConfiguration.class })
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-		properties = "app.dev-auth.header-enabled=true")
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class ImportApiTest {
 
 	@LocalServerPort
@@ -30,7 +29,7 @@ class ImportApiTest {
 	@BeforeEach
 	void setUp() {
 		new Http(port).await("/actuator/health/readiness", (r) -> r.statusCode() == 200, Duration.ofSeconds(60));
-		http = new Http(port, UUID.randomUUID().toString());
+		http = Http.signedUp(port);
 		http.put("/api/profile", """
 				{"name":"테스트","balance":300000,"incomeDate":"2026-10-09","incomeAmount":0,
 				 "protectedAmount":0,"protectionCycle":"THIS_PERIOD","cardOutstanding":0}""");
