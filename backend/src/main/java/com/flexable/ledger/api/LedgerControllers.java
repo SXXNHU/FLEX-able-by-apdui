@@ -9,6 +9,7 @@ import com.flexable.ledger.application.BudgetService.BudgetResponse;
 import com.flexable.ledger.application.BudgetService.PreviewResponse;
 import com.flexable.ledger.application.BudgetService.ReconciliationResponse;
 import com.flexable.ledger.application.FixedExpenseService;
+import com.flexable.ledger.application.LedgerDataService;
 import com.flexable.ledger.application.FixedExpenseService.FixedExpenseRequest;
 import com.flexable.ledger.application.FixedExpenseService.FixedExpenseResponse;
 import com.flexable.ledger.application.PlanService;
@@ -19,6 +20,7 @@ import com.flexable.ledger.application.TransactionResponse;
 import com.flexable.ledger.application.TransactionService;
 import com.flexable.ledger.domain.Category;
 import com.flexable.ledger.domain.Estimate;
+import com.flexable.user.CurrentUser;
 import jakarta.validation.Valid;
 
 import org.springframework.http.HttpStatus;
@@ -53,6 +55,11 @@ final class LedgerControllers {
 		@GetMapping("/today")
 		BudgetResponse today() {
 			return service.today();
+		}
+
+		@PostMapping("/simulate")
+		BudgetResponse simulate(@Valid @RequestBody BudgetService.SimulateRequest request) {
+			return service.simulate(request);
 		}
 
 		@PostMapping("/preview")
@@ -158,6 +165,28 @@ final class LedgerControllers {
 		@ResponseStatus(HttpStatus.NO_CONTENT)
 		void delete(@PathVariable UUID id) {
 			service.delete(id.toString());
+		}
+
+	}
+
+	@RestController
+	@RequestMapping("/api/ledger")
+	static class LedgerData {
+
+		private final LedgerDataService service;
+
+		private final CurrentUser currentUser;
+
+		LedgerData(LedgerDataService service, CurrentUser currentUser) {
+			this.service = service;
+			this.currentUser = currentUser;
+		}
+
+		/** 예산 설정과 모든 기록을 지운다 (계정은 유지). 다시 설정하면 새로 시작한다. */
+		@DeleteMapping
+		@ResponseStatus(HttpStatus.NO_CONTENT)
+		void reset() {
+			service.reset(currentUser.id());
 		}
 
 	}

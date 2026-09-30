@@ -19,7 +19,7 @@ public record AppProperties(Cors cors, Schema schema, Auth auth) {
 	 * @param refreshCookie 웹 클라이언트용 refresh token 쿠키
 	 */
 	public record Auth(String jwtSecret, String issuer, Duration accessTokenTtl, Duration refreshTokenTtl,
-			RefreshCookie refreshCookie, LoginThrottle loginThrottle) {
+			RefreshCookie refreshCookie, LoginThrottle loginThrottle, int guestLimitPerHour) {
 	}
 
 	public record RefreshCookie(String name, boolean secure, String sameSite) {

@@ -28,4 +28,10 @@ class ProfileController {
 		return service.save(request);
 	}
 
+	/** 정산 알림 설정. 예산 설정 폼을 저장해도 덮어쓰지 않도록 따로 둔다. */
+	@PutMapping("/settings")
+	ProfileResponse saveSettings(@Valid @RequestBody ProfileService.SettingsRequest request) {
+		return service.saveSettings(request);
+	}
+
 }

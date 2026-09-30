@@ -60,6 +60,13 @@ public class Profile {
 	@Column(name = "last_reconciled_at")
 	private Instant lastReconciledAt;
 
+	/** 하루 정산 알림 시각 (HH:mm) */
+	@Column(name = "notification_time", nullable = false, length = 5)
+	private String notificationTime = "21:00";
+
+	@Column(name = "notifications_enabled", nullable = false)
+	private boolean notificationsEnabled;
+
 	@Version
 	private long version;
 
@@ -74,7 +81,21 @@ public class Profile {
 		this.trackingStart = trackingStart;
 	}
 
-	void update(ProfileRequest request, Instant now) {
+	public void updateSettings(String notificationTime, boolean notificationsEnabled, Instant now) {
+		this.notificationTime = notificationTime;
+		this.notificationsEnabled = notificationsEnabled;
+		this.updatedAt = now;
+	}
+
+	public String getNotificationTime() {
+		return notificationTime;
+	}
+
+	public boolean isNotificationsEnabled() {
+		return notificationsEnabled;
+	}
+
+	public void update(ProfileRequest request, Instant now) {
 		this.name = request.name().strip();
 		this.balance = request.balance();
 		this.incomeDate = request.incomeDate();

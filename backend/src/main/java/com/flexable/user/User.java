@@ -21,6 +21,10 @@ public class User {
 	@Column(name = "password_hash", length = 100)
 	private String passwordHash;
 
+	/** 가입 없이 둘러보는 사용자 (자격 증명 없음) */
+	@Column(nullable = false)
+	private boolean guest;
+
 	@Column(name = "created_at", nullable = false)
 	private Instant createdAt;
 
@@ -32,6 +36,16 @@ public class User {
 		this.email = email;
 		this.passwordHash = passwordHash;
 		this.createdAt = createdAt;
+	}
+
+	public static User guest(String id, Instant createdAt) {
+		User user = new User(id, null, null, createdAt);
+		user.guest = true;
+		return user;
+	}
+
+	public boolean isGuest() {
+		return guest;
 	}
 
 	public String getId() {

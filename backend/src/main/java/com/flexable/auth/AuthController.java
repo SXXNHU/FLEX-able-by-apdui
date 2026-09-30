@@ -6,6 +6,7 @@ import java.time.Duration;
 import com.flexable.common.config.AppProperties;
 import com.flexable.common.error.BusinessRuleException;
 import com.flexable.user.CurrentUser;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
@@ -49,6 +50,10 @@ class AuthController {
 			Client client) {
 	}
 
+	/** @param demo 시연 데이터를 채운다 */
+	record GuestRequest(Client client, boolean demo) {
+	}
+
 	/** @param refreshToken NATIVE만 본문으로 보낸다. WEB은 쿠키를 쓴다. */
 	record RefreshRequest(@Size(max = 200) String refreshToken, Client client) {
 	}
@@ -57,7 +62,8 @@ class AuthController {
 	record TokenResponse(String accessToken, String tokenType, long expiresIn, String refreshToken, String userId) {
 	}
 
-	record MeResponse(String id, String email) {
+	/** @param guest 가입 없이 둘러보는 중 (이메일 없음) */
+	record MeResponse(String id, String email, boolean guest) {
 	}
 
 	private final AuthService auth;
@@ -66,7 +72,10 @@ class AuthController {
 
 	private final AppProperties.Auth properties;
 
-	AuthController(AuthService auth, CurrentUser currentUser, AppProperties properties) {
+	private final GuestThrottle guestThrottle;
+
+	AuthController(AuthService auth, CurrentUser currentUser, AppProperties properties, GuestThrottle guestThrottle) {
+		this.guestThrottle = guestThrottle;
 		this.auth = auth;
 		this.currentUser = currentUser;
 		this.properties = properties.auth();
@@ -78,6 +87,12 @@ class AuthController {
 			throw new BusinessRuleException("password_too_long", "비밀번호가 너무 길어요.");
 		}
 		return respond(HttpStatus.CREATED, auth.signup(request.email(), request.password()), request.client());
+	}
+
+	@PostMapping("/guest")
+	ResponseEntity<TokenResponse> guest(@RequestBody GuestRequest request, HttpServletRequest http) {
+		guestThrottle.acquire(http.getRemoteAddr());
+		return respond(HttpStatus.CREATED, auth.guest(request.demo()), request.client());
 	}
 
 	@PostMapping("/login")
@@ -113,7 +128,7 @@ class AuthController {
 	@GetMapping("/me")
 	MeResponse me() {
 		var user = auth.me(currentUser.id());
-		return new MeResponse(user.getId(), user.getEmail());
+		return new MeResponse(user.getId(), user.getEmail(), user.isGuest());
 	}
 
 	private ResponseEntity<TokenResponse> respond(HttpStatus status, TokenService.Tokens tokens, Client requested) {

@@ -39,6 +39,11 @@ public class LedgerStore {
 		this.reconciled = reconciled;
 	}
 
+	/** 예산 설정 전이면 비어 있다. */
+	public java.util.Optional<Loaded> find(String userId) {
+		return profiles.findById(userId).map(this::assemble);
+	}
+
 	/** 읽기용 */
 	public Loaded load(String userId) {
 		return assemble(profiles.findById(userId).orElseThrow(LedgerStore::noProfile));

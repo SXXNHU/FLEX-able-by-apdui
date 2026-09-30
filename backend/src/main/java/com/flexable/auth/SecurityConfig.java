@@ -53,8 +53,8 @@ public class SecurityConfig {
 				.permitAll()
 				.requestMatchers("/actuator/health", "/actuator/health/**")
 				.permitAll()
-				.requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/refresh",
-						"/api/auth/logout")
+				.requestMatchers(HttpMethod.POST, "/api/auth/signup", "/api/auth/login", "/api/auth/guest",
+						"/api/auth/refresh", "/api/auth/logout")
 				.permitAll()
 				.requestMatchers("/api/**")
 				.authenticated()

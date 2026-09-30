@@ -8,15 +8,36 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    # E2E는 실제 백엔드와 MySQL로 돌린다. 백엔드는 Playwright가 띄운다.
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: flexable
+          MYSQL_USER: flexable
+          MYSQL_PASSWORD: flexable
+          MYSQL_ROOT_PASSWORD: flexable-root
+        ports:
+          - 13306:3306
+    env:
+      E2E_EXTERNAL_DB: '1'
+      E2E_DB_PORT: '13306'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - run: ./gradlew classes --quiet
+        working-directory: backend
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v4

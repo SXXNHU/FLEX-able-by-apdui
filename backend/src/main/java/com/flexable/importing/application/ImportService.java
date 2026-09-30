@@ -133,6 +133,21 @@ public class ImportService {
 		return null;
 	}
 
+	@Transactional(readOnly = true)
+	public List<DuplicateInfo> duplicates(ImportModels.DuplicateCheckRequest request) {
+		String exclude = request.excludeId() != null ? request.excludeId().toString() : null;
+		List<LedgerTransaction> others = store.load(currentUser.id())
+			.ledger()
+			.transactions()
+			.stream()
+			.filter((t) -> !t.id().equals(exclude))
+			.toList();
+		return DuplicateFinder.find(others, request.title().strip(), request.amount(), request.date(), request.kind())
+			.stream()
+			.map(ImportService::info)
+			.toList();
+	}
+
 	/**
 	 * 모두 반영하거나 하나도 반영하지 않는다. 이미 반영된 항목(같은 ID 또는 같은 외부 이벤트)은 건너뛴다. 중복이 의심되는데
 	 * 사용자가 추가를 확인하지 않은 항목이 있으면 전체를 거절하고 그 항목을 알려준다.

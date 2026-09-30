@@ -13,6 +13,10 @@ public interface ReconciledDateRepository extends JpaRepository<ReconciledDateEn
 	List<LocalDate> findDays(String userId);
 
 	@Modifying
+	@Query("delete from ReconciledDateEntity r where r.key.userId = :userId")
+	void deleteAllByUserId(String userId);
+
+	@Modifying
 	@Query("delete from ReconciledDateEntity r where r.key.userId = :userId and r.key.day = :day")
 	void deleteDay(String userId, LocalDate day);
 
