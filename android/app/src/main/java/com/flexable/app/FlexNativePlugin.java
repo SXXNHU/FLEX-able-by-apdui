@@ -2,6 +2,10 @@ package com.flexable.app;
 
 import android.Manifest;
 import android.content.ActivityNotFoundException;
+import android.content.Intent;
+import android.provider.Settings;
+
+import androidx.core.app.NotificationManagerCompat;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -66,6 +70,52 @@ public class FlexNativePlugin extends Plugin {
             secureStore.remove(key);
         }
         call.resolve();
+    }
+
+    /* ───────── 결제 알림 ───────── */
+
+    /** 사용자가 시스템 설정에서 이 앱의 알림 접근을 허용했는지 */
+    @PluginMethod
+    public void notificationAccessStatus(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("granted", NotificationManagerCompat.getEnabledListenerPackages(getContext())
+            .contains(getContext().getPackageName()));
+        call.resolve(result);
+    }
+
+    /** 알림 접근 허용 화면을 연다. 권한 요청 대화상자가 없는 특수 권한이라 사용자가 직접 켠다. */
+    @PluginMethod
+    public void openNotificationAccessSettings(PluginCall call) {
+        try {
+            getActivity().startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+            call.resolve();
+        } catch (ActivityNotFoundException e) {
+            call.reject("알림 접근 설정을 열지 못했어요.", "NO_SETTINGS");
+        }
+    }
+
+    /** 큐에 쌓인 결제 알림 원문. 서버 저장이 끝나면 ackNotifications로 지운다. */
+    @PluginMethod
+    public void pendingNotifications(PluginCall call) {
+        try {
+            JSObject result = new JSObject();
+            result.put("items", new JSArray(new NotificationQueue(getContext()).pending().toString()));
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("알림 큐를 읽지 못했어요.", e);
+        }
+    }
+
+    @PluginMethod
+    public void ackNotifications(PluginCall call) {
+        try {
+            JSArray ids = call.getArray("ids", new JSArray());
+            JSObject result = new JSObject();
+            result.put("removed", new NotificationQueue(getContext()).ack(ids.<String>toList()));
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("알림 큐를 정리하지 못했어요.", e);
+        }
     }
 
     /* ───────── 캘린더 ───────── */
