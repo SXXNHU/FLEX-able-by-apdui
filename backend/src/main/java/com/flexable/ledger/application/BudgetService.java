@@ -4,18 +4,26 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 
 import com.flexable.common.error.BusinessRuleException;
 import com.flexable.ledger.application.PlanService.PlanRequest;
 import com.flexable.ledger.domain.Budget;
+import com.flexable.ledger.domain.FixedItem;
 import com.flexable.ledger.domain.Ledger;
 import com.flexable.ledger.domain.LedgerProfile;
 import com.flexable.ledger.persistence.LedgerStore;
 import com.flexable.ledger.persistence.ReconciledDateEntity;
 import com.flexable.ledger.persistence.ReconciledDateRepository;
 import com.flexable.user.CurrentUser;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -78,6 +86,35 @@ public class BudgetService {
 		Instant last = loaded.profile().getLastReconciledAt();
 		return new PreviewResponse(BudgetResponse.of(today, ledger.profile(), ledger.budget(today), last),
 				BudgetResponse.of(today, ledger.profile(), after, last));
+	}
+
+	/** 예산 설정 화면에서 입력 중인 값으로 계산한 결과 (저장하지 않음). */
+	public record SimulateRequest(@Min(-1_000_000_000_000L) @Max(1_000_000_000_000L) long balance,
+			@NotNull LocalDate incomeDate, @Min(0) @Max(1_000_000_000_000L) long protectedAmount,
+			@Min(-1_000_000_000_000L) @Max(1_000_000_000_000L) long cardOutstanding,
+			@Size(max = 100) List<@Valid SimulatedFixed> fixed) {
+	}
+
+	/** @param id 기존 고정지출이면 그 ID (연결된 납부액을 반영하기 위해) */
+	public record SimulatedFixed(String id, @Min(0) @Max(1_000_000_000_000L) long amount, @NotNull LocalDate date) {
+	}
+
+	@Transactional(readOnly = true)
+	public BudgetResponse simulate(SimulateRequest request) {
+		LocalDate today = LocalDate.now(clock);
+		Optional<LedgerStore.Loaded> loaded = store.find(currentUser.id());
+		Ledger current = loaded.map(LedgerStore.Loaded::ledger).orElse(null);
+		LedgerProfile profile = new LedgerProfile(request.balance(), request.cardOutstanding(),
+				request.protectedAmount(), request.incomeDate(),
+				current != null ? current.profile().trackingStart() : today.minusDays(1));
+		List<FixedItem> fixed = (request.fixed() != null ? request.fixed() : List.<SimulatedFixed>of()).stream()
+			.map((f) -> new FixedItem(f.id() != null ? f.id() : UUID.randomUUID().toString(), "", f.amount(), f.date()))
+			.toList();
+		Ledger ledger = new Ledger(profile, fixed, current != null ? current.plans() : List.of(),
+				current != null ? current.transactions() : List.of(),
+				current != null ? current.reconciledDates() : Set.of());
+		return BudgetResponse.of(today, profile, ledger.budget(today),
+				loaded.map((l) -> l.profile().getLastReconciledAt()).orElse(null));
 	}
 
 	@Transactional(readOnly = true)

@@ -11,51 +11,243 @@ import {
   ShieldCheck,
   Wallet,
   ChevronLeft,
+  LogIn,
 } from 'lucide-react'
 import {
   addDays,
-  addTransaction,
-  budget,
   categories,
   dateLabel,
-  emptyState,
-  estimateFromHistory,
-  findDuplicates,
   localDate,
-  parseCaptureText,
   parsePlan,
-  removeTransaction,
   sourceLabels,
   uid,
   validDate,
   won,
-  type AppState,
+  type Budget,
   type Category,
+  type Estimate,
   type Fixed,
+  type Ledger,
   type Plan,
   type Profile,
   type Transaction,
   type TransactionKind,
 } from './domain'
+import { errorMessage } from './api/client'
+import { auth, importApi, ledgerApi, type DuplicateInfo } from './api/ledger'
 import { Amount, Brand, Button, ErrorText, Field, MoneyInput } from './ui'
 import { CandidateList, toCandidates, type Candidate } from './importUI'
 
+/** 입력이 멈춘 뒤에 서버 계산을 부른다 (입력할 때마다 요청하지 않음). */
+function useDebounced<T>(value: T, delay = 350) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(t)
+  }, [value, delay])
+  return debounced
+}
+
+export function Welcome({
+  onStart,
+  onDemo,
+  busy,
+}: {
+  onStart: () => void
+  onDemo: () => void
+  busy: boolean
+}) {
+  return (
+    <div className="welcome">
+      <Brand />
+      <div className="welcome-heading">
+        <span className="eyebrow">약속은 지키고, 오늘은 가볍게.</span>
+        <h1>
+          그래서 오늘,
+          <br />
+          얼마까지
+          <br />
+          <span>써도 될까?</span>
+        </h1>
+        <p>
+          월세도, 주말 약속도 미리 빼두고
+          <br />
+          진짜 내 생활비만 알려드려요.
+        </p>
+      </div>
+      <div className="wallet-art" aria-hidden="true">
+        <div className="paper paper-back" />
+        <div className="paper paper-front">
+          <span>오늘의 여유</span>
+          <strong>
+            22,000<span>원</span>
+          </strong>
+          <div className="paper-rule" />
+          <small>지킬 돈은 이미 챙겨뒀어요.</small>
+        </div>
+        <div className="wallet-body">
+          <Brand />
+          <span>마음 편히, flex.</span>
+        </div>
+        <span className="art-star">✳</span>
+      </div>
+      <div className="welcome-actions">
+        <Button onClick={onStart} disabled={busy}>
+          내 생활비 알아보기 <ArrowRight size={18} />
+        </Button>
+        <Button variant="quiet" onClick={onDemo} disabled={busy}>
+          {busy ? '예시 데이터를 준비하고 있어요' : '먼저 둘러볼게요'}
+        </Button>
+        <p className="privacy-note">둘러보기는 가입 없이 · 내 예산은 계정에 안전하게 저장</p>
+      </div>
+    </div>
+  )
+}
+
+export function AuthForm({ onDone, onBack }: { onDone: () => Promise<void>; onBack: () => void }) {
+  const [mode, setMode] = useState<'signup' | 'login'>('signup')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const submit = async (e: FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await (mode === 'signup' ? auth.signup(email.trim(), password) : auth.login(email.trim(), password))
+      await onDone()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <form className="form-stack" onSubmit={submit}>
+      <div className="onboarding-top">
+        <button type="button" className="icon-button" onClick={onBack} aria-label="처음으로">
+          <ChevronLeft />
+        </button>
+      </div>
+      <div className="form-intro">
+        <span className="intro-icon">
+          <LogIn />
+        </span>
+        <h1>
+          {mode === 'signup' ? (
+            <>
+              내 예산을 담을
+              <br />
+              계정을 만들어요.
+            </>
+          ) : (
+            <>
+              다시 오셨군요.
+              <br />
+              로그인해주세요.
+            </>
+          )}
+        </h1>
+        <p>기록은 계정에 저장돼 다른 기기에서도 이어서 볼 수 있어요.</p>
+      </div>
+      <div className="segmented">
+        <button
+          type="button"
+          className={mode === 'signup' ? 'selected' : ''}
+          onClick={() => setMode('signup')}
+        >
+          처음이에요
+        </button>
+        <button type="button" className={mode === 'login' ? 'selected' : ''} onClick={() => setMode('login')}>
+          로그인
+        </button>
+      </div>
+      <Field label="이메일">
+        <input
+          type="email"
+          required
+          autoComplete="email"
+          maxLength={254}
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="me@example.com"
+        />
+      </Field>
+      <Field label="비밀번호" hint={mode === 'signup' ? '8자 이상으로 정해주세요.' : undefined}>
+        <input
+          type="password"
+          required
+          minLength={mode === 'signup' ? 8 : undefined}
+          maxLength={64}
+          autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+      </Field>
+      <ErrorText message={error} />
+      <Button type="submit" disabled={busy}>
+        {busy ? '확인하고 있어요' : mode === 'signup' ? '가입하고 시작하기' : '로그인'}{' '}
+        <ArrowRight size={17} />
+      </Button>
+    </form>
+  )
+}
+
+const emptyProfile = (): Profile => ({
+  name: '',
+  balance: 0,
+  incomeDate: addDays(localDate(), 10),
+  incomeAmount: 0,
+  protectedAmount: 0,
+  protectionCycle: '이번 구간',
+  cardOutstanding: 0,
+})
+
 export function ProfileForm({
-  state,
+  ledger,
   onSave,
   onboarding = false,
-  onDemo,
+  onBack,
 }: {
-  state?: AppState
-  onSave: (state: AppState) => void
+  ledger?: Ledger
+  onSave: (profile: Profile, fixed: Fixed[]) => Promise<void>
   onboarding?: boolean
-  onDemo?: () => void
+  onBack?: () => void
 }) {
-  const [profile, setProfile] = useState<Profile>(state?.profile || emptyState().profile)
-  const [fixed, setFixed] = useState<Fixed[]>(state?.fixed || [])
-  const [step, setStep] = useState(onboarding ? 0 : 3)
+  const [profile, setProfile] = useState<Profile>(ledger?.profile || emptyProfile())
+  const [fixed, setFixed] = useState<Fixed[]>(
+    ledger?.fixed.map(({ id, title, amount, date }) => ({ id, title, amount, date })) || [],
+  )
+  const [step, setStep] = useState(onboarding ? 1 : 3)
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [summary, setSummary] = useState<Budget | null>(null)
   const update = (patch: Partial<Profile>) => setProfile((p) => ({ ...p, ...patch }))
+  const hasTransactions = (fixedId: string) => ledger?.transactions.some((t) => t.fixedId === fixedId)
+  const simulation = useDebounced(
+    JSON.stringify({
+      balance: profile.balance || 0,
+      incomeDate: profile.incomeDate,
+      protectedAmount: profile.protectedAmount || 0,
+      cardOutstanding: profile.cardOutstanding || 0,
+      fixed: fixed
+        .filter((f) => validDate(f.date))
+        .map((f) => ({ id: f.id, amount: f.amount || 0, date: f.date })),
+    }),
+  )
+  useEffect(() => {
+    if (step < 3 || !validDate(profile.incomeDate)) return
+    let alive = true
+    ledgerApi
+      .simulate(JSON.parse(simulation))
+      .then((b) => alive && setSummary(b))
+      .catch(() => alive && setSummary(null))
+    return () => {
+      alive = false
+    }
+    // simulation 문자열이 입력값 전체를 담고 있어 profile.incomeDate를 따로 의존하지 않는다.
+  }, [simulation, step])
   const validate = () => {
     if (!profile.name.trim()) return '어떻게 불러드릴까요? 이름을 입력해주세요.'
     if (!validDate(profile.incomeDate) || profile.incomeDate <= localDate())
@@ -64,72 +256,38 @@ export function ProfileForm({
       return '고정지출의 이름, 금액, 납부일을 모두 입력해주세요.'
     return ''
   }
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
     const issue = validate()
     setError(issue)
     if (issue) return
-    onSave({ ...(state || emptyState()), profile: { ...profile, name: profile.name.trim() }, fixed })
+    setSaving(true)
+    try {
+      await onSave(
+        { ...profile, name: profile.name.trim() },
+        fixed.map((f) => ({ ...f, title: f.title.trim() })),
+      )
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setSaving(false)
+    }
   }
-  if (onboarding && step === 0)
-    return (
-      <div className="welcome">
-        <Brand />
-        <div className="welcome-heading">
-          <span className="eyebrow">약속은 지키고, 오늘은 가볍게.</span>
-          <h1>
-            그래서 오늘,
-            <br />
-            얼마까지
-            <br />
-            <span>써도 될까?</span>
-          </h1>
-          <p>
-            월세도, 주말 약속도 미리 빼두고
-            <br />
-            진짜 내 생활비만 알려드려요.
-          </p>
-        </div>
-        <div className="wallet-art" aria-hidden="true">
-          <div className="paper paper-back" />
-          <div className="paper paper-front">
-            <span>오늘의 여유</span>
-            <strong>
-              22,000<span>원</span>
-            </strong>
-            <div className="paper-rule" />
-            <small>지킬 돈은 이미 챙겨뒀어요.</small>
-          </div>
-          <div className="wallet-body">
-            <Brand />
-            <span>마음 편히, flex.</span>
-          </div>
-          <span className="art-star">✳</span>
-        </div>
-        <div className="welcome-actions">
-          <Button onClick={() => setStep(1)}>
-            내 생활비 알아보기 <ArrowRight size={18} />
-          </Button>
-          <Button variant="quiet" onClick={onDemo}>
-            먼저 둘러볼게요
-          </Button>
-          <p className="privacy-note">가입 없이 시작 · 이 기기에만 저장</p>
-        </div>
-      </div>
-    )
   return (
     <form className="form-stack" onSubmit={submit}>
       {onboarding && (
         <>
           <div className="onboarding-top">
-            <button
-              type="button"
-              className="icon-button"
-              onClick={() => setStep(step - 1)}
-              aria-label="이전 단계"
-            >
-              <ChevronLeft />
-            </button>
+            {(step > 1 || onBack) && (
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => (step > 1 ? setStep(step - 1) : onBack?.())}
+                aria-label="이전 단계"
+              >
+                <ChevronLeft />
+              </button>
+            )}
             <span>{step} / 3</span>
           </div>
           <div className="step-track">
@@ -230,7 +388,7 @@ export function ProfileForm({
                 <button
                   type="button"
                   className="icon-button remove-fixed"
-                  disabled={!!state?.transactions.some((t) => t.fixedId === f.id)}
+                  disabled={!!hasTransactions(f.id)}
                   onClick={() => setFixed((items) => items.filter((item) => item.id !== f.id))}
                   aria-label={`${f.title || '고정지출'} 삭제`}
                 >
@@ -263,7 +421,7 @@ export function ProfileForm({
                   />
                 </Field>
               </div>
-              {state?.transactions.some((t) => t.fixedId === f.id) && (
+              {hasTransactions(f.id) && (
                 <small>연결된 거래가 있어 삭제할 수 없어요. 새 구간에는 새 항목을 추가해주세요.</small>
               )}
             </div>
@@ -301,16 +459,14 @@ export function ProfileForm({
           <p className="field-hint">주기는 메모로 보관해요. 자동 반복 차감 없이 다음 구간에 직접 확인해요.</p>
           <Field label="아직 내지 않은 카드 이용액" hint="이미 결제한 카드대금은 제외해주세요.">
             <MoneyInput
-              min={state ? -1e12 : 0}
+              min={ledger ? -1e12 : 0}
               value={profile.cardOutstanding}
               onChange={(n) => update({ cardOutstanding: n })}
             />
           </Field>
           <div className="setup-summary">
             <span>현재 입력 기준 하루 생활비</span>
-            <strong>
-              <Amount value={budget({ ...(state || emptyState()), profile, fixed }).daily} />
-            </strong>
+            <strong>{summary ? <Amount value={summary.daily} /> : '—'}</strong>
             <small>확정된 계획과 미납 비용을 반영한 금액</small>
           </div>
         </>
@@ -337,7 +493,7 @@ export function ProfileForm({
           다음 <ArrowRight size={17} />
         </Button>
       ) : (
-        <Button key="submit" type="submit">
+        <Button key="submit" type="submit" disabled={saving}>
           {onboarding ? '내 생활비 확인하기' : '예산 설정 저장'} <Check size={17} />
         </Button>
       )}
@@ -346,14 +502,16 @@ export function ProfileForm({
 }
 
 export function PlanForm({
-  state,
+  ledger,
   initial,
   onSave,
 }: {
-  state: AppState
+  ledger: Ledger
   initial?: Plan
-  onSave: (plan: Plan) => void
+  onSave: (plan: Plan) => Promise<void>
 }) {
+  const today = ledger.budget.today
+  const existing = initial && ledger.plans.some((p) => p.id === initial.id) ? initial.id : undefined
   const [plan, setPlan] = useState<Plan>(
     initial || { id: uid(), title: '', amount: 0, date: '', category: '기타', confirmed: true, note: '' },
   )
@@ -361,24 +519,42 @@ export function PlanForm({
   const [text, setText] = useState('')
   const [parsed, setParsed] = useState(!!initial)
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
   const [recommend, setRecommend] = useState(false)
+  const [preview, setPreview] = useState<{ current: Budget; preview: Budget; today: Budget } | null>(null)
+  const [estimate, setEstimate] = useState<Estimate | null>(null)
   const update = (patch: Partial<Plan>) => setPlan((p) => ({ ...p, ...patch }))
-  const current = budget(state)
-  const preview = budget({
-    ...state,
-    plans: [...state.plans.filter((p) => p.id !== plan.id), { ...plan, confirmed: true }],
-  })
-  const todayPreview = budget({
-    ...state,
-    plans: [...state.plans.filter((p) => p.id !== plan.id), { ...plan, date: localDate(), confirmed: true }],
-  })
-  const estimate = estimateFromHistory(state, plan.category)
-  const submit = (e: FormEvent) => {
+  const debounced = useDebounced(plan)
+  useEffect(() => {
+    if (!parsed || !validDate(debounced.date)) return setPreview(null)
+    let alive = true
+    const draft = { ...debounced, title: debounced.title.trim() || '계획', amount: debounced.amount || 0 }
+    Promise.all([
+      ledgerApi.previewPlan(draft, existing),
+      ledgerApi.previewPlan({ ...draft, date: today }, existing),
+    ])
+      .then(([p, t]) => alive && setPreview({ current: p.current, preview: p.preview, today: t.preview }))
+      .catch(() => alive && setPreview(null))
+    return () => {
+      alive = false
+    }
+  }, [debounced, parsed, existing, today])
+  useEffect(() => {
+    let alive = true
+    ledgerApi
+      .estimate(plan.category)
+      .then((e) => alive && setEstimate(e))
+      .catch(() => alive && setEstimate(null))
+    return () => {
+      alive = false
+    }
+  }, [plan.category])
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
     if (
       !plan.title.trim() ||
       !validDate(plan.date) ||
-      plan.date < localDate() ||
+      plan.date < today ||
       !Number.isSafeInteger(plan.amount) ||
       plan.amount < 0 ||
       (plan.confirmed && plan.amount === 0)
@@ -386,8 +562,16 @@ export function PlanForm({
       setError('계획 이름, 오늘 이후 날짜, 본인 부담 금액을 확인해주세요.')
       return
     }
-    onSave({ ...plan, title: plan.title.trim() })
+    setSaving(true)
+    try {
+      await onSave({ ...plan, title: plan.title.trim() })
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setSaving(false)
+    }
   }
+  const incomeDate = ledger.profile.incomeDate
   return (
     <form className="form-stack" onSubmit={submit}>
       <div className="segmented">
@@ -440,7 +624,7 @@ export function PlanForm({
                 setError('하고 싶은 일을 먼저 적어주세요.')
                 return
               }
-              const result = parsePlan(text)
+              const result = parsePlan(text, today)
               setPlan((p) => ({ ...p, ...result }))
               setParsed(true)
               setRecommend(!result.date)
@@ -471,7 +655,7 @@ export function PlanForm({
               <input
                 required
                 type="date"
-                min={localDate()}
+                min={today}
                 value={plan.date}
                 onChange={(e) => update({ date: e.target.value })}
               />
@@ -511,10 +695,10 @@ export function PlanForm({
               아직 비교할 정산 기록이 없어요. 인원·활동·분담을 고려해 직접 정해주세요.
             </p>
           )}
-          {state.memories.length > 0 && (
+          {ledger.memories.length > 0 && (
             <details className="memory-reminder">
-              <summary>내가 기억해 둔 소비 기준 {state.memories.length}개</summary>
-              {state.memories.map((m) => (
+              <summary>내가 기억해 둔 소비 기준 {ledger.memories.length}개</summary>
+              {ledger.memories.map((m) => (
                 <p key={m.id}>
                   <strong>{m.title}</strong>
                   <br />
@@ -537,20 +721,19 @@ export function PlanForm({
               </p>
               {[
                 {
-                  date: localDate(),
+                  date: today,
                   title: '오늘 확정하기',
-                  detail: `바로 계획에 반영해요. 현재 구간 하루 ${won(todayPreview.daily)}원${todayPreview.shortage ? ` · ${won(todayPreview.shortage)}원 부족` : ''}.`,
+                  detail: preview
+                    ? `바로 계획에 반영해요. 현재 구간 하루 ${won(preview.today.daily)}원${preview.today.shortage ? ` · ${won(preview.today.shortage)}원 부족` : ''}.`
+                    : '바로 계획에 반영해요.',
                 },
                 {
-                  date: addDays(localDate(), 7),
+                  date: addDays(today, 7),
                   title: '일주일 뒤 다시 보기',
                   detail: '충동 구매를 줄일 시간을 확보해요. 다음 수입일 이전이면 예산은 같아요.',
                 },
                 {
-                  date:
-                    state.profile.incomeDate > localDate()
-                      ? state.profile.incomeDate
-                      : addDays(localDate(), 7),
+                  date: incomeDate > today ? incomeDate : addDays(today, 7),
                   title: '다음 수입 이후 검토하기',
                   detail:
                     '이번 생활비를 지킬 수 있어요. 다음 구간의 지출이 아직 없어 구매 가능 여부는 미정이에요.',
@@ -585,23 +768,23 @@ export function PlanForm({
             <span>확정하면 하루 생활비는</span>
             <div>
               <strong>
-                {won(current.daily)}
+                {preview ? won(preview.current.daily) : '—'}
                 <small>원</small>
               </strong>
               <ArrowRight size={18} />
               <strong className="green">
-                {won(preview.daily)}
+                {preview ? won(preview.preview.daily) : '—'}
                 <small>원</small>
               </strong>
             </div>
-            {plan.date >= state.profile.incomeDate ? (
+            {plan.date >= incomeDate ? (
               <p>다음 수입 이후 계획은 별도 보관하며 현재 예산에서 차감하지 않아요.</p>
             ) : (
               <p>{won(plan.amount)}원을 계획 예산으로 따로 챙겨둘게요.</p>
             )}
-            {preview.shortage > 0 && (
+            {!!preview?.preview.shortage && (
               <p className="danger-text">
-                확정 시 {won(preview.shortage)}원 부족해요. 금액이나 시점을 조정해보세요.
+                확정 시 {won(preview.preview.shortage)}원 부족해요. 금액이나 시점을 조정해보세요.
               </p>
             )}
           </div>
@@ -615,7 +798,7 @@ export function PlanForm({
               예산에 반영하기<small>체크를 해제하면 미확정 계획으로만 보관해요.</small>
             </span>
           </label>
-          <Button type="submit">
+          <Button type="submit" disabled={saving}>
             {plan.confirmed ? '이 금액으로 계획 확정' : '미확정 계획 저장'} <Check size={17} />
           </Button>
         </>
@@ -626,26 +809,26 @@ export function PlanForm({
 }
 
 export function TransactionForm({
-  state,
+  ledger,
   planId,
   fixedId,
   initial,
   onSave,
 }: {
-  state: AppState
+  ledger: Ledger
   planId?: string
   fixedId?: string
   initial?: Transaction
-  onSave: (state: AppState) => void
+  onSave: (tx: Transaction, isNew: boolean) => Promise<void>
 }) {
-  const linked = state.plans.find((p) => p.id === planId) || state.fixed.find((f) => f.id === fixedId)
+  const linked = ledger.plans.find((p) => p.id === planId) || ledger.fixed.find((f) => f.id === fixedId)
   const [tx, setTx] = useState<Transaction>(
     initial || {
       id: uid(),
       title: linked?.title || '',
       amount: linked?.amount || 0,
-      date: localDate(),
-      category: planId ? state.plans.find((p) => p.id === planId)!.category : fixedId ? '주거' : '식비',
+      date: ledger.budget.today,
+      category: planId ? ledger.plans.find((p) => p.id === planId)!.category : fixedId ? '주거' : '식비',
       kind: 'expense',
       method: 'cash',
       planId,
@@ -655,27 +838,37 @@ export function TransactionForm({
     },
   )
   const [error, setError] = useState('')
-  const [asking, setAsking] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [duplicate, setDuplicate] = useState<DuplicateInfo | null>(null)
   const update = (patch: Partial<Transaction>) => {
-    setAsking(false)
+    setDuplicate(null)
     setTx((t) => ({ ...t, ...patch }))
   }
-  const duplicate = findDuplicates(
-    state.transactions.filter((t) => t.id !== initial?.id),
-    tx,
-  )[0]
-  const commit = () => {
+  const commit = async () => {
+    setSaving(true)
+    setError('')
     try {
-      onSave(addTransaction(initial ? removeTransaction(state, initial.id) : state, tx))
+      await onSave(tx, !initial)
     } catch (e) {
-      setAsking(false)
-      setError((e as Error).message)
+      setDuplicate(null)
+      setError(errorMessage(e))
+    } finally {
+      setSaving(false)
     }
   }
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (duplicate && !initial) setAsking(true)
-    else commit()
+    if (initial) return commit()
+    setSaving(true)
+    try {
+      const found = await ledgerApi.duplicates(tx)
+      setSaving(false)
+      if (found.length) return setDuplicate(found[0])
+    } catch {
+      // 중복 확인을 못 해도 등록 자체는 서버 규칙으로 검증된다.
+      setSaving(false)
+    }
+    await commit()
   }
   return (
     <form className="form-stack" onSubmit={submit}>
@@ -705,7 +898,7 @@ export function TransactionForm({
             required
             value={tx.refundOf || ''}
             onChange={(e) => {
-              const original = state.transactions.find((t) => t.id === e.target.value)
+              const original = ledger.transactions.find((t) => t.id === e.target.value)
               update({
                 refundOf: e.target.value,
                 title: original ? `${original.title} 환불` : '',
@@ -714,7 +907,7 @@ export function TransactionForm({
             }}
           >
             <option value="">원거래 선택</option>
-            {state.transactions
+            {ledger.transactions
               .filter((t) => t.kind === 'expense')
               .map((t) => (
                 <option value={t.id} key={t.id}>
@@ -741,7 +934,7 @@ export function TransactionForm({
           <input
             required
             type="date"
-            max={localDate()}
+            max={ledger.budget.today}
             value={tx.date}
             onChange={(e) => update({ date: e.target.value })}
           />
@@ -776,7 +969,7 @@ export function TransactionForm({
             >
               <option value="">일반 생활비에서 지출</option>
               <optgroup label="소비 계획">
-                {state.plans
+                {ledger.plans
                   .filter((p) => p.confirmed)
                   .map((p) => (
                     <option key={p.id} value={`plan:${p.id}`}>
@@ -785,7 +978,7 @@ export function TransactionForm({
                   ))}
               </optgroup>
               <optgroup label="고정지출">
-                {state.fixed.map((f) => (
+                {ledger.fixed.map((f) => (
                   <option key={f.id} value={`fixed:${f.id}`}>
                     {f.title}
                   </option>
@@ -810,7 +1003,7 @@ export function TransactionForm({
       )}
       {tx.kind === 'card_payment' && (
         <p className="info-box">
-          현재 미결제 카드액 {won(state.profile.cardOutstanding)}원. 납부액만큼 잔액과 미결제액을 함께 줄여
+          현재 미결제 카드액 {won(ledger.profile.cardOutstanding)}원. 납부액만큼 잔액과 미결제액을 함께 줄여
           이중 차감을 막아요.
         </p>
       )}
@@ -822,30 +1015,24 @@ export function TransactionForm({
           실제 입금액을 현재 잔액에 더해요. 수입일이 지났다면 내 예산에서 다음 수입일도 변경해주세요.
         </p>
       )}
-      {duplicate && !asking && (
-        <p className="duplicate-note">
-          비슷한 거래가 있어요: {duplicate.tx.title} · {won(duplicate.tx.amount)}원 ·{' '}
-          {dateLabel(duplicate.tx.date)} ({sourceLabels[duplicate.tx.source]})
-        </p>
-      )}
       <ErrorText message={error} />
-      {asking ? (
+      {duplicate ? (
         <div className="warning-box duplicate-confirm" role="alertdialog" aria-label="중복 거래 확인">
           <p>
             <strong>이미 있는 거래 같아요. 그래도 추가할까요?</strong>
-            {duplicate?.tx.title} {won(duplicate?.tx.amount || 0)}원이{' '}
-            {sourceLabels[duplicate?.tx.source || 'manual']}
+            {duplicate.title} {won(duplicate.amount)}원({dateLabel(duplicate.date)})이{' '}
+            {sourceLabels[duplicate.source]}
             (으)로 이미 등록돼 있어요. 같은 결제라면 잔액이 두 번 빠져요.
           </p>
-          <Button variant="danger" onClick={commit}>
+          <Button variant="danger" disabled={saving} onClick={() => void commit()}>
             다른 거래예요, 추가할게요
           </Button>
-          <Button variant="quiet" onClick={() => setAsking(false)}>
+          <Button variant="quiet" onClick={() => setDuplicate(null)}>
             추가하지 않기
           </Button>
         </div>
       ) : (
-        <Button type="submit">
+        <Button type="submit" disabled={saving}>
           거래 반영하기 <Check size={17} />
         </Button>
       )}
@@ -853,14 +1040,14 @@ export function TransactionForm({
   )
 }
 
-export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state: AppState) => void }) {
+export function CaptureForm({ ledger, onSaved }: { ledger: Ledger; onSaved: (count: number) => void }) {
   const [preview, setPreview] = useState('')
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
   const [text, setText] = useState('')
   const [rows, setRows] = useState<Candidate[]>([])
-  const [date, setDate] = useState(addDays(localDate(), -1))
+  const [date, setDate] = useState(addDays(ledger.budget.today, -1))
   const worker = useRef<{ terminate: () => Promise<unknown> } | null>(null)
   const alive = useRef(true)
   useEffect(() => {
@@ -876,8 +1063,22 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
     },
     [preview],
   )
-  const candidates = (content: string) =>
-    setRows(toCandidates(parseCaptureText(content, date).map((r) => ({ ...r, kind: 'expense' as const }))))
+  /** 인식한 문자에서 거래 후보를 만드는 일은 서버가 한다 (기존 거래와의 중복 판정 포함). */
+  const candidates = async (content: string) => {
+    if (!content.trim()) return
+    try {
+      const result = await importApi.candidates('capture', { text: content, fallbackDate: date })
+      if (!alive.current) return
+      setRows(toCandidates(result.candidates))
+      setError(
+        result.candidates.length
+          ? ''
+          : '거래를 찾지 못했어요. 아래 인식 문자를 수정하거나 직접 후보를 추가해주세요.',
+      )
+    } catch (e) {
+      if (alive.current) setError(errorMessage(e))
+    }
+  }
   const recognize = async (file: File) => {
     if (!file.type.startsWith('image/') || file.size > 12 * 1024 * 1024) {
       setError('12MB 이하의 이미지 파일을 선택해주세요.')
@@ -902,14 +1103,12 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
         return
       }
       const result = await instance.recognize(file)
-      if (alive.current) {
-        setText(result.data.text)
-        candidates(result.data.text)
-        if (!parseCaptureText(result.data.text, date).length)
-          setError('거래를 찾지 못했어요. 아래 인식 문자를 수정하거나 직접 후보를 추가해주세요.')
-      }
       await instance.terminate()
       worker.current = null
+      if (alive.current) {
+        setText(result.data.text)
+        await candidates(result.data.text)
+      }
     } catch {
       if (alive.current)
         setError('문자 인식을 완료하지 못했어요. 첫 인식에는 인터넷이 필요해요. 내역을 직접 입력해도 돼요.')
@@ -922,10 +1121,10 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
   return (
     <div className="form-stack">
       <p className="intro-copy">
-        토스·카카오페이 등의 내역을 캡처해 올려주세요. 원본은 이 화면을 닫으면 보관하지 않아요.
+        토스·카카오페이 등의 내역을 캡처해 올려주세요. 이미지는 이 기기에서 글자만 읽고 보관하지 않아요.
       </p>
       <Field label="날짜가 인식되지 않을 때 사용할 거래일">
-        <input type="date" max={localDate()} value={date} onChange={(e) => setDate(e.target.value)} />
+        <input type="date" max={ledger.budget.today} value={date} onChange={(e) => setDate(e.target.value)} />
       </Field>
       <label className={`upload-zone ${busy ? 'disabled' : ''}`}>
         <input
@@ -944,8 +1143,7 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
       </label>
       {preview && <img className="capture-preview" src={preview} alt="확인 중인 거래내역 캡처" />}
       <p className="field-hint">
-        이미지는 외부 서버로 보내지 않아요. 인식 엔진과 언어 자료만 인터넷에서 내려받아요. 불확실한 결과는
-        직접 고쳐주세요.
+        이미지는 외부로 보내지 않아요. 인식한 문자만 거래 후보를 만들 때 쓰고, 확인한 거래만 저장해요.
       </p>
       <details>
         <summary>인식 문자 확인 · 직접 붙여넣기</summary>
@@ -956,19 +1154,19 @@ export function CaptureForm({ state, onSave }: { state: AppState; onSave: (state
           onChange={(e) => setText(e.target.value)}
           placeholder={'2026.09.28\n동네 커피 4,500원\n점심 9,500원'}
         />
-        <Button variant="secondary" disabled={busy} onClick={() => candidates(text)}>
+        <Button variant="secondary" disabled={busy} onClick={() => void candidates(text)}>
           이 문자로 후보 다시 만들기
         </Button>
       </details>
       <ErrorText message={error} />
       <CandidateList
-        state={state}
+        ledger={ledger}
         rows={rows}
         setRows={setRows}
         source="capture"
         busy={busy}
         fallbackDate={date}
-        onSave={onSave}
+        onSaved={onSaved}
       />
     </div>
   )

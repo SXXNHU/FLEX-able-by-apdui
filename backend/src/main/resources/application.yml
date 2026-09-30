@@ -83,3 +83,5 @@ app:
     login-throttle:
       max-failures: 5
       lock-duration: 15m
+    # 같은 IP에서 1시간에 만들 수 있는 게스트(둘러보기) 계정 수
+    guest-limit-per-hour: ${AUTH_GUEST_LIMIT_PER_HOUR:20}

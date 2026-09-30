@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  AlertTriangle,
   ArrowRight,
   ArrowUpRight,
   Bell,
@@ -11,6 +10,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleHelp,
+  CloudOff,
   Download,
   FileSpreadsheet,
   Heart,
@@ -18,6 +18,7 @@ import {
   Landmark,
   ListFilter,
   LockKeyhole,
+  LogOut,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -28,39 +29,42 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  UserRound,
   Wallet,
   X,
 } from 'lucide-react'
 import {
-  actualFor,
   addDays,
-  addTransaction,
   asDate,
-  budget,
   categories,
   dateLabel,
-  demoState,
-  isClosed,
-  isDuplicate,
   localDate,
   parseCalendar,
-  remainingFor,
-  removeTransaction,
   sourceLabels,
   uid,
-  validateState,
   won,
-  type AppState,
+  type Ledger,
   type Memory,
   type Plan,
+  type PlanView,
   type Transaction,
 } from './domain'
+import {
+  connectionStatus,
+  errorMessage,
+  loadConfig,
+  onConnectionChange,
+  onSignedOut,
+  refreshAccessToken,
+  type ConnectionStatus,
+} from './api/client'
+import { auth, ledgerApi, loadLedger, type Me } from './api/ledger'
 import { Amount, Brand, Button, CategoryIcon, Empty, ErrorText, Field, Row, Sheet } from './ui'
-import { CaptureForm, PlanForm, ProfileForm, TransactionForm } from './forms'
-import { BankSyncForm, CsvForm, InboxReview } from './importUI'
+import { AuthForm, CaptureForm, PlanForm, ProfileForm, TransactionForm, Welcome } from './forms'
+import { BankSyncInfo, CsvForm } from './importUI'
 
-const KEY = 'flex-able:state:v1'
 type Page = 'home' | 'plans' | 'records' | 'settings'
+type Phase = 'booting' | 'offline' | 'welcome' | 'auth' | 'setup' | 'ready'
 type Modal =
   | {
       type:
@@ -74,82 +78,107 @@ type Modal =
         | 'reset'
         | 'demoImport'
         | 'csv'
-        | 'inbox'
         | 'bankSync'
-        | 'autoImport'
     }
   | { type: 'plan'; plan?: Plan }
-  | { type: 'planDetail'; plan: Plan }
+  | { type: 'planDetail'; plan: PlanView }
   | { type: 'transaction'; planId?: string; fixedId?: string; initial?: Transaction }
   | { type: 'transactionDetail'; tx: Transaction }
   | { type: 'memory'; memory?: Memory }
-  | { type: 'restore'; state: AppState }
-function readSaved(): { state: AppState | null; error: string } {
-  try {
-    const raw = localStorage.getItem(KEY)
-    if (!raw) return { state: null, error: '' }
-    const value: unknown = JSON.parse(raw)
-    return validateState(value)
-      ? { state: value, error: '' }
-      : { state: null, error: '저장된 데이터 형식을 확인하지 못했어요. 기존 원본은 유지 중이에요.' }
-  } catch {
-    return { state: null, error: '기기 저장소를 읽지 못했어요. 브라우저 설정을 확인해주세요.' }
-  }
-}
+type Act = (task: () => Promise<unknown>, message: string) => Promise<void>
+
 export default function App() {
-  const [loaded] = useState(readSaved)
-  const [state, setState] = useState<AppState | null>(loaded.state)
+  const [phase, setPhase] = useState<Phase>('booting')
+  const [bootError, setBootError] = useState('')
+  const [me, setMe] = useState<Me | null>(null)
+  const [ledger, setLedger] = useState<Ledger | null>(null)
   const [splash, setSplash] = useState(true)
   const [page, setPage] = useState<Page>('home')
   const [modal, setModal] = useState<Modal | null>(null)
   const [toast, setToast] = useState('')
-  const [storageError, setStorageError] = useState(loaded.error)
-  const [today, setToday] = useState(localDate())
+  const [guestBusy, setGuestBusy] = useState(false)
+  const [connection, setConnection] = useState<ConnectionStatus>(connectionStatus())
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const notify = (message: string) => {
+  const notify = useCallback((message: string) => {
     setToast(message)
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => setToast(''), 4500)
-  }
+  }, [])
+
+  /** 로그인한 사용자와 데이터를 서버에서 불러온다. 예산 설정 전이면 설정 화면으로 간다. */
+  const loadUser = useCallback(async () => {
+    const who = await auth.me()
+    const data = await loadLedger(who)
+    setMe(who)
+    setLedger(data)
+    setPhase(data ? 'ready' : 'setup')
+  }, [])
+  const boot = useCallback(async () => {
+    setPhase('booting')
+    setBootError('')
+    try {
+      await loadConfig()
+      if (await refreshAccessToken()) await loadUser()
+      else setPhase('welcome')
+    } catch (e) {
+      setBootError(errorMessage(e))
+      setPhase('offline')
+    }
+  }, [loadUser])
+  const reload = useCallback(async () => {
+    if (!me) return
+    const data = await loadLedger(me)
+    setLedger(data)
+    if (!data) setPhase('setup')
+  }, [me])
+  /** 서버에 변경을 요청하고, 성공하면 다시 불러와 화면을 서버 상태와 맞춘다. 실패는 호출한 폼이 보여준다. */
+  const act: Act = useCallback(
+    async (task, message) => {
+      await task()
+      await reload()
+      if (message) notify(message)
+      setModal(null)
+    },
+    [reload, notify],
+  )
+  const run = (task: () => Promise<unknown>, message: string) =>
+    act(task, message).catch((e) => notify(errorMessage(e)))
+
   useEffect(() => {
     const t = setTimeout(() => setSplash(false), 1500)
+    void boot()
     return () => clearTimeout(t)
-  }, [])
-  useEffect(() => {
-    const t = setInterval(() => setToday(localDate()), 30000)
-    return () => {
-      clearInterval(t)
-      if (timer.current) clearTimeout(timer.current)
-    }
-  }, [])
+  }, [boot])
+  useEffect(() => onConnectionChange(setConnection), [])
+  useEffect(
+    () =>
+      onSignedOut(() => {
+        setLedger(null)
+        setMe(null)
+        setModal(null)
+        setPhase('welcome')
+        notify('로그인이 만료됐어요. 다시 로그인해주세요.')
+      }),
+    [notify],
+  )
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' })
   }, [page])
-  const save = (next: AppState, message = '') => {
-    try {
-      if (!validateState(next)) throw new Error('입력값을 저장할 수 없어요. 항목을 다시 확인해주세요.')
-      localStorage.setItem(KEY, JSON.stringify(next))
-      setState(next)
-      setStorageError('')
-      if (message) notify(message)
-      return true
-    } catch (error) {
-      setStorageError(
-        `저장하지 못했어요. ${(error as Error).message} 저장 공간과 브라우저 설정을 확인해주세요.`,
-      )
-      return false
-    }
-  }
-  const finish = (next: AppState, message: string) => {
-    if (save(next, message)) setModal(null)
-  }
+  // 날짜가 바뀌면 서버 기준으로 다시 계산한 오늘 예산을 받는다.
   useEffect(() => {
-    if (!state?.notifications) return
+    if (!ledger) return
+    const t = setInterval(() => {
+      if (localDate() !== ledger.budget.today) void reload().catch(() => {})
+    }, 30000)
+    return () => clearInterval(t)
+  }, [ledger, reload])
+  useEffect(() => {
+    if (!ledger?.notifications) return
     const check = () => {
       const now = new Date()
       const date = localDate(now)
       const current = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-      if (current < state.notificationTime || state.reconciledDates.includes(date)) return
+      if (current < ledger.notificationTime || ledger.reconciledDates.includes(date)) return
       try {
         if (sessionStorage.getItem('flex-reminded') === date) return
         sessionStorage.setItem('flex-reminded', date)
@@ -166,76 +195,88 @@ export default function App() {
     check()
     const interval = setInterval(check, 30000)
     return () => clearInterval(interval)
-  }, [state])
-  const exportData = () => {
-    if (!state) return
-    downloadFile(`flex-able-${today}.json`, JSON.stringify(state, null, 2), 'application/json')
-    notify('백업 파일을 저장했어요.')
-  }
-  const restoreFile = async (file: File) => {
+  }, [ledger, notify])
+
+  const startGuest = async () => {
+    setGuestBusy(true)
     try {
-      if (file.size > 5e6) throw new Error('5MB 이하 백업 파일만 불러올 수 있어요.')
-      const parsed: unknown = JSON.parse(await file.text())
-      if (!validateState(parsed)) throw new Error('flex-able 백업 형식이 아니에요.')
-      setModal({ type: 'restore', state: parsed })
+      await auth.guest(true)
+      await loadUser()
+      setPage('home')
+      notify('예시 데이터로 둘러보고 있어요.')
     } catch (e) {
-      notify((e as Error).message)
+      notify(errorMessage(e))
+    } finally {
+      setGuestBusy(false)
     }
   }
+  const logout = async () => {
+    try {
+      await auth.logout()
+    } catch {
+      // 서버에 닿지 않아도 이 기기에서는 로그아웃한다.
+    }
+    setLedger(null)
+    setMe(null)
+    setModal(null)
+    setPage('home')
+    setPhase('welcome')
+  }
+  const exportData = () => {
+    if (!ledger) return
+    downloadFile(`flex-able-${ledger.budget.today}.json`, JSON.stringify(ledger, null, 2), 'application/json')
+    notify('내 데이터를 파일로 저장했어요.')
+  }
   const open = (next: Modal) => setModal(next)
+
   let content: ReactNode
-  if (!state)
+  if (phase === 'booting') content = <div className="onboarding" aria-busy="true" />
+  else if (phase === 'offline')
     content = (
       <div className="onboarding">
-        {storageError ? (
-          <div className="recovery">
-            <Brand />
-            <h1>
-              기존 기록을
-              <br />
-              먼저 확인해주세요.
-            </h1>
-            <p>{storageError}</p>
-            <Button
-              variant="secondary"
-              onClick={() => {
-                try {
-                  downloadFile('flex-able-recovery.json', localStorage.getItem(KEY) || '', 'application/json')
-                } catch {
-                  notify('원본을 읽을 수 없어요.')
-                }
-              }}
-            >
-              저장 원본 다운로드
-            </Button>
-            <Button
-              onClick={() => {
-                if (confirm('기존 저장 데이터를 지우고 새로 시작할까요? 원본을 먼저 다운로드해주세요.')) {
-                  try {
-                    localStorage.removeItem(KEY)
-                    setStorageError('')
-                  } catch {
-                    notify('저장소 접근이 차단되어 있어요.')
-                  }
-                }
-              }}
-            >
-              새로 시작하기
-            </Button>
-          </div>
-        ) : (
-          <ProfileForm
-            onboarding
-            onSave={(next) => {
-              save(next, '내 생활비 준비가 끝났어요.')
-              setPage('home')
-            }}
-            onDemo={() => {
-              save(demoState(), '예시 데이터로 둘러보고 있어요.')
-              setPage('home')
-            }}
-          />
-        )}
+        <div className="recovery">
+          <Brand />
+          <span className="intro-icon">
+            <CloudOff />
+          </span>
+          <h1>
+            서버에 연결할 수
+            <br />
+            없어요.
+          </h1>
+          <p>{bootError || '네트워크를 확인하고 다시 시도해주세요.'}</p>
+          <Button onClick={() => void boot()}>
+            <RefreshCw size={17} />
+            다시 연결하기
+          </Button>
+        </div>
+      </div>
+    )
+  else if (phase === 'welcome')
+    content = (
+      <div className="onboarding">
+        <Welcome onStart={() => setPhase('auth')} onDemo={() => void startGuest()} busy={guestBusy} />
+      </div>
+    )
+  else if (phase === 'auth')
+    content = (
+      <div className="onboarding">
+        <AuthForm onDone={loadUser} onBack={() => setPhase('welcome')} />
+      </div>
+    )
+  else if (phase === 'setup' || !ledger)
+    content = (
+      <div className="onboarding">
+        <ProfileForm
+          onboarding
+          onBack={me?.guest ? undefined : () => void logout()}
+          onSave={async (profile, fixed) => {
+            await ledgerApi.saveProfile(profile, fixed, [])
+            await loadUser()
+            setPage('home')
+            notify('내 생활비 준비가 끝났어요.')
+          }}
+        />
       </div>
     )
   else
@@ -249,10 +290,10 @@ export default function App() {
             onClick={() => open({ type: 'notifications' })}
           >
             <Bell size={22} />
-            {budget(state, today).provisional && <i />}
+            {ledger.budget.provisional && <i />}
           </button>
         </header>
-        {state.demo && (
+        {ledger.guest && (
           <div className="demo-banner">
             <span>예시 데이터로 둘러보는 중</span>
             <button onClick={() => open({ type: 'reset' })}>
@@ -260,25 +301,33 @@ export default function App() {
             </button>
           </div>
         )}
-        {storageError && (
+        {connection !== 'online' && (
           <div className="storage-error" role="alert">
-            {storageError}
+            {connection === 'offline'
+              ? '서버에 연결할 수 없어요. 지금 보이는 금액은 마지막으로 불러온 값이에요.'
+              : '서버가 데이터베이스를 준비하고 있어요. 잠시 후 다시 시도해주세요.'}{' '}
+            <button
+              className="text-button"
+              onClick={() => void reload().catch((e) => notify(errorMessage(e)))}
+            >
+              다시 시도
+            </button>
           </div>
         )}
         <main className="main-content" key={page}>
           {page === 'home' ? (
-            <HomePage state={state} today={today} open={open} navigate={setPage} />
+            <HomePage ledger={ledger} open={open} navigate={setPage} />
           ) : page === 'plans' ? (
-            <PlansPage state={state} today={today} open={open} />
+            <PlansPage ledger={ledger} open={open} />
           ) : page === 'records' ? (
-            <RecordsPage state={state} today={today} open={open} />
+            <RecordsPage ledger={ledger} open={open} />
           ) : (
             <SettingsPage
-              state={state}
+              ledger={ledger}
               open={open}
               onExport={exportData}
-              onRestore={restoreFile}
-              save={save}
+              onLogout={() => void logout()}
+              run={run}
               notify={notify}
             />
           )}
@@ -307,17 +356,22 @@ export default function App() {
         </nav>
         {modal && (
           <Sheet title={modalTitle(modal)} onClose={() => setModal(null)}>
-            {modal.type === 'budget' && <BudgetDetail state={state} today={today} open={open} />}
+            {modal.type === 'budget' && <BudgetDetail ledger={ledger} open={open} />}
             {modal.type === 'profile' && (
-              <ProfileForm state={state} onSave={(next) => finish(next, '예산 설정을 반영했어요.')} />
+              <ProfileForm
+                ledger={ledger}
+                onSave={(profile, fixed) =>
+                  act(() => ledgerApi.saveProfile(profile, fixed, ledger.fixed), '예산 설정을 반영했어요.')
+                }
+              />
             )}
             {modal.type === 'plan' && (
               <PlanForm
-                state={state}
+                ledger={ledger}
                 initial={modal.plan}
                 onSave={(plan) =>
-                  finish(
-                    { ...state, plans: [...state.plans.filter((p) => p.id !== plan.id), plan] },
+                  act(
+                    () => ledgerApi.savePlan(plan),
                     plan.confirmed
                       ? '계획 비용을 챙기고 생활비를 다시 계산했어요.'
                       : '미확정 계획으로 저장했어요.',
@@ -327,97 +381,95 @@ export default function App() {
             )}
             {modal.type === 'planDetail' && (
               <PlanDetail
-                state={state}
-                plan={modal.plan}
+                ledger={ledger}
+                plan={ledger.plans.find((p) => p.id === modal.plan.id) || modal.plan}
                 open={open}
-                onDelete={() => {
-                  if (state.transactions.some((t) => t.planId === modal.plan.id)) {
-                    notify('연결된 거래가 있어요. 거래를 먼저 수정하거나 삭제해주세요.')
-                    return
-                  }
-                  finish(
-                    { ...state, plans: state.plans.filter((p) => p.id !== modal.plan.id) },
+                onDelete={() =>
+                  run(
+                    () => ledgerApi.deletePlan(modal.plan.id),
                     '계획을 취소하고 확보액을 생활비로 돌렸어요.',
                   )
-                }}
+                }
               />
             )}
             {modal.type === 'transaction' && (
               <TransactionForm
-                state={state}
+                ledger={ledger}
                 planId={modal.planId}
                 fixedId={modal.fixedId}
                 initial={modal.initial}
-                onSave={(next) => finish(next, '거래를 반영했어요.')}
+                onSave={(tx, isNew) =>
+                  act(
+                    () => (isNew ? ledgerApi.createTransaction(tx) : ledgerApi.replaceTransaction(tx)),
+                    '거래를 반영했어요.',
+                  )
+                }
               />
             )}
             {modal.type === 'transactionDetail' && (
               <TransactionDetail
-                state={state}
+                ledger={ledger}
                 tx={modal.tx}
                 open={open}
-                onDelete={() => {
-                  try {
-                    finish(removeTransaction(state, modal.tx.id), '거래를 삭제하고 잔액을 되돌렸어요.')
-                  } catch (e) {
-                    notify((e as Error).message)
-                  }
-                }}
+                onDelete={() =>
+                  run(() => ledgerApi.deleteTransaction(modal.tx.id), '거래를 삭제하고 잔액을 되돌렸어요.')
+                }
               />
             )}
             {modal.type === 'capture' && (
               <CaptureForm
-                state={state}
-                onSave={(next) => finish(next, '확인한 거래만 반영했어요. 원본 이미지는 보관하지 않아요.')}
+                ledger={ledger}
+                onSaved={(count) =>
+                  void run(
+                    async () => {},
+                    `확인한 거래 ${count}건을 반영했어요. 원본 이미지는 보관하지 않아요.`,
+                  )
+                }
               />
             )}
             {modal.type === 'csv' && (
-              <CsvForm state={state} onSave={(next) => finish(next, 'CSV에서 확인한 거래를 반영했어요.')} />
-            )}
-            {modal.type === 'bankSync' && (
-              <BankSyncForm state={state} onSave={(next) => finish(next, '계좌 내역을 반영했어요.')} />
-            )}
-            {modal.type === 'inbox' && (
-              <InboxReview
-                state={state}
-                onSave={(next, message) => {
-                  if (save(next, message) && !next.inbox?.length) setModal(null)
-                }}
+              <CsvForm
+                ledger={ledger}
+                onSaved={(count) => void run(async () => {}, `CSV에서 확인한 거래 ${count}건을 반영했어요.`)}
               />
             )}
+            {modal.type === 'bankSync' && <BankSyncInfo />}
             {modal.type === 'reconcile' && (
               <Reconcile
-                state={state}
-                today={today}
+                ledger={ledger}
                 open={open}
-                onSave={(next) => finish(next, '정산 완료! 남은 생활비를 다시 확인해보세요.')}
+                onSave={(date) =>
+                  act(() => ledgerApi.reconcile(date), '정산 완료! 남은 생활비를 다시 확인해보세요.')
+                }
               />
             )}
-            {modal.type === 'notifications' && <Notifications state={state} today={today} open={open} />}
+            {modal.type === 'notifications' && <Notifications ledger={ledger} open={open} />}
             {modal.type === 'calendarImport' && (
               <CalendarImport
-                state={state}
-                onSave={(next) =>
-                  finish(next, '일정을 미확정 계획으로 불러왔어요. 금액을 확인하고 확정해주세요.')
+                ledger={ledger}
+                onSave={(items) =>
+                  act(async () => {
+                    for (const item of items)
+                      await ledgerApi.savePlan({
+                        id: uid(),
+                        title: item.title,
+                        date: item.date,
+                        amount: 0,
+                        confirmed: false,
+                        category: '약속',
+                        note: '캘린더에서 가져온 일정 · 내 부담 금액 확인 필요',
+                      })
+                  }, '일정을 미확정 계획으로 불러왔어요. 금액을 확인하고 확정해주세요.')
                 }
               />
             )}
             {modal.type === 'memory' && (
               <MemoryForm
                 initial={modal.memory}
-                onSave={(memory) =>
-                  finish(
-                    { ...state, memories: [...state.memories.filter((m) => m.id !== memory.id), memory] },
-                    '기억할 내용을 저장했어요.',
-                  )
-                }
+                onSave={(memory) => act(() => ledgerApi.saveMemory(memory), '기억할 내용을 저장했어요.')}
                 onDelete={
                   modal.memory
-                    ? () =>
-                        finish(
-                          { ...state, memories: state.memories.filter((m) => m.id !== modal.memory?.id) },
-                          '메모를 삭제했어요.',
-                        )
+                    ? () => run(() => ledgerApi.deleteMemory(modal.memory!.id), '메모를 삭제했어요.')
                     : undefined
                 }
               />
@@ -425,56 +477,22 @@ export default function App() {
             {modal.type === 'help' && <Help />}
             {modal.type === 'demoImport' && (
               <DemoImport
-                state={state}
-                onSave={(next) => finish(next, '시연 거래를 반영했어요. 실제 금융 데이터가 아니에요.')}
+                ledger={ledger}
+                onSave={(task) => act(task, '시연 거래를 반영했어요. 실제 금융 데이터가 아니에요.')}
               />
             )}
             {modal.type === 'reset' && (
-              <div className="form-stack">
-                <span className="intro-icon">
-                  <RefreshCw />
-                </span>
-                <h2>내 예산으로 새로 시작할까요?</h2>
-                <p>
-                  이 기기에 저장된 예산, 계획, 거래, 메모가 모두 삭제돼요. 보관할 기록은 먼저 백업해주세요.
-                </p>
-                <Button variant="secondary" onClick={exportData}>
-                  <Download size={17} />
-                  기존 데이터 백업
-                </Button>
-                <Button
-                  variant="danger"
-                  onClick={() => {
-                    try {
-                      localStorage.removeItem(KEY)
-                      setState(null)
-                      setModal(null)
-                      setPage('home')
-                      setStorageError('')
-                      window.scrollTo(0, 0)
-                    } catch {
-                      notify('저장된 데이터를 삭제할 수 없어요.')
-                    }
-                  }}
-                >
-                  저장 기록 지우고 시작
-                </Button>
-              </div>
-            )}
-            {modal.type === 'restore' && (
-              <div className="form-stack">
-                <h2>{modal.state.profile.name}님의 백업</h2>
-                <p>
-                  거래 {modal.state.transactions.length}건, 계획 {modal.state.plans.length}개를 불러와요. 현재
-                  기기의 데이터 전체를 교체합니다.
-                </p>
-                <Button variant="secondary" onClick={exportData}>
-                  현재 기록 먼저 백업
-                </Button>
-                <Button onClick={() => finish(modal.state, '백업 데이터를 복원했어요.')}>
-                  이 백업으로 교체
-                </Button>
-              </div>
+              <ResetConfirm
+                ledger={ledger}
+                onExport={exportData}
+                onSignUp={() => void logout().then(() => setPhase('auth'))}
+                onReset={() =>
+                  run(async () => {
+                    await ledgerApi.reset()
+                    setPage('home')
+                  }, '모든 기록을 지웠어요. 예산을 새로 설정해주세요.')
+                }
+              />
             )}
           </Sheet>
         )}
@@ -499,22 +517,21 @@ export default function App() {
 }
 
 function HomePage({
-  state,
-  today,
+  ledger,
   open,
   navigate,
 }: {
-  state: AppState
-  today: string
+  ledger: Ledger
   open: (m: Modal) => void
   navigate: (p: Page) => void
 }) {
-  const b = budget(state, today)
-  const upcoming = state.plans
-    .filter((p) => p.confirmed && !isClosed(state, p.id))
+  const b = ledger.budget
+  const today = b.today
+  const upcoming = ledger.plans
+    .filter((p) => p.confirmed && !p.closed)
     .sort((a, b) => a.date.localeCompare(b.date))
     .slice(0, 2)
-  const generalToday = state.transactions.filter(
+  const generalToday = ledger.transactions.filter(
     (t) => t.date === today && t.kind === 'expense' && !t.planId && !t.fixedId,
   )
   return (
@@ -522,7 +539,7 @@ function HomePage({
       <div className="greeting">
         <p>{dateLabel(today)}</p>
         <h1>
-          {state.profile.name}님,
+          {ledger.profile.name}님,
           <br />
           오늘도 내 페이스대로.
         </h1>
@@ -578,8 +595,8 @@ function HomePage({
       </div>
       <p className="reconciled-time">
         마지막 정산:{' '}
-        {state.lastReconciled
-          ? new Date(state.lastReconciled).toLocaleString('ko-KR', {
+        {ledger.lastReconciled
+          ? new Date(ledger.lastReconciled).toLocaleString('ko-KR', {
               month: 'numeric',
               day: 'numeric',
               hour: '2-digit',
@@ -587,16 +604,6 @@ function HomePage({
             })
           : '아직 확인 전'}
       </p>
-      {!!state.inbox?.length && (
-        <button className="today-plan-banner inbox-banner" onClick={() => open({ type: 'inbox' })}>
-          <AlertTriangle size={19} />
-          <span>
-            이미 있는 거래 같아요
-            <strong>자동으로 가져온 {state.inbox.length}건, 추가할지 확인해주세요</strong>
-          </span>
-          <ChevronRight size={18} />
-        </button>
-      )}
       {b.todayPlanned > 0 && (
         <button className="today-plan-banner" onClick={() => navigate('plans')}>
           <Heart size={19} />
@@ -636,9 +643,7 @@ function HomePage({
         <div className="section-heading">
           <h2>
             미리 챙겨둔 즐거움
-            <span className="count">
-              {state.plans.filter((p) => p.confirmed && !isClosed(state, p.id)).length}
-            </span>
+            <span className="count">{ledger.plans.filter((p) => p.confirmed && !p.closed).length}</span>
           </h2>
           <button className="text-button muted" onClick={() => navigate('plans')}>
             전체 보기
@@ -660,7 +665,7 @@ function HomePage({
                 <span className="row-copy">
                   <strong>{p.title}</strong>
                   <small>
-                    {p.date >= state.profile.incomeDate
+                    {p.date >= ledger.profile.incomeDate
                       ? '다음 구간에 보관 중'
                       : p.date < today
                         ? '실제 결제내역 확인 필요'
@@ -668,7 +673,7 @@ function HomePage({
                   </small>
                 </span>
                 <span className="row-value">
-                  {won(remainingFor(state, p))}
+                  {won(p.remaining)}
                   <small>원</small>
                 </span>
               </button>
@@ -714,7 +719,7 @@ function HomePage({
           <div className="overview-bar" aria-hidden="true">
             <span
               style={{
-                width: `${Math.min(100, (Math.max(0, b.rawRemaining) / Math.max(1, state.profile.balance)) * 100)}%`,
+                width: `${Math.min(100, (Math.max(0, b.rawRemaining) / Math.max(1, b.balance)) * 100)}%`,
               }}
             />
           </div>
@@ -760,7 +765,8 @@ function HomePage({
   )
 }
 
-function PlansPage({ state, today, open }: { state: AppState; today: string; open: (m: Modal) => void }) {
+function PlansPage({ ledger, open }: { ledger: Ledger; open: (m: Modal) => void }) {
+  const today = ledger.budget.today
   const [filter, setFilter] = useState<'all' | 'confirmed' | 'draft' | 'closed'>('all')
   const [month, setMonth] = useState(today.slice(0, 7))
   const [selectedDate, setSelectedDate] = useState('')
@@ -772,13 +778,13 @@ function PlansPage({ state, today, open }: { state: AppState; today: string; ope
     setMonth(localDate(next).slice(0, 7))
     setSelectedDate('')
   }
-  const items = state.plans
+  const items = ledger.plans
     .filter(
       (p) =>
         (!selectedDate || p.date === selectedDate) &&
         (filter === 'all' || filter === 'closed'
-          ? filter === 'all' || isClosed(state, p.id)
-          : !isClosed(state, p.id) && p.confirmed === (filter === 'confirmed')),
+          ? filter === 'all' || p.closed
+          : !p.closed && p.confirmed === (filter === 'confirmed')),
     )
     .sort((a, b) => a.date.localeCompare(b.date))
   return (
@@ -802,7 +808,7 @@ function PlansPage({ state, today, open }: { state: AppState; today: string; ope
           이번 구간에 챙겨둔 돈
         </span>
         <strong>
-          <Amount value={budget(state, today).plannedReserve} />
+          <Amount value={ledger.budget.plannedReserve} />
         </strong>
       </div>
       <section className="calendar">
@@ -839,7 +845,7 @@ function PlansPage({ state, today, open }: { state: AppState; today: string; ope
           ))}
           {Array.from({ length: days }, (_, i) => {
             const date = `${month}-${String(i + 1).padStart(2, '0')}`
-            const hasPlan = state.plans.some((p) => p.date === date)
+            const hasPlan = ledger.plans.some((p) => p.date === date)
             return (
               <button
                 key={date}
@@ -884,8 +890,8 @@ function PlansPage({ state, today, open }: { state: AppState; today: string; ope
             <button className="plan-card" key={p.id} onClick={() => open({ type: 'planDetail', plan: p })}>
               <div className="plan-card-top">
                 <CategoryIcon category={p.category} />
-                <span className={`badge ${isClosed(state, p.id) ? 'gray' : p.confirmed ? 'mint' : 'sand'}`}>
-                  {isClosed(state, p.id) ? '정산 완료' : p.confirmed ? '확정' : '미확정'}
+                <span className={`badge ${p.closed ? 'gray' : p.confirmed ? 'mint' : 'sand'}`}>
+                  {p.closed ? '정산 완료' : p.confirmed ? '확정' : '미확정'}
                 </span>
               </div>
               <h3>{p.title}</h3>
@@ -895,12 +901,12 @@ function PlansPage({ state, today, open }: { state: AppState; today: string; ope
               </p>
               <div className="plan-card-bottom">
                 <strong>
-                  <Amount value={isClosed(state, p.id) ? actualFor(state, p.id) : p.amount} />
+                  <Amount value={p.closed ? p.actual : p.amount} />
                 </strong>
                 <span>
-                  {isClosed(state, p.id)
+                  {p.closed
                     ? '실제 사용'
-                    : p.date >= state.profile.incomeDate
+                    : p.date >= ledger.profile.incomeDate
                       ? '다음 구간'
                       : '내 부담 금액'}
                   <ChevronRight size={15} />
@@ -938,17 +944,19 @@ function PlansPage({ state, today, open }: { state: AppState; today: string; ope
   )
 }
 
-function RecordsPage({ state, today, open }: { state: AppState; today: string; open: (m: Modal) => void }) {
+function RecordsPage({ ledger, open }: { ledger: Ledger; open: (m: Modal) => void }) {
+  const today = ledger.budget.today
   const [filter, setFilter] = useState('all')
   const [query, setQuery] = useState('')
   const weekDates = Array.from({ length: 7 }, (_, i) => addDays(today, i - 6))
+  // 차트 표시용 합계 (예산 계산에는 쓰지 않는다)
   const spent = (date: string) =>
-    state.transactions
+    ledger.transactions
       .filter((t) => t.date === date)
       .reduce((n, t) => n + (t.kind === 'expense' ? t.amount : t.kind === 'refund' ? -t.amount : 0), 0)
   const max = Math.max(1, ...weekDates.map(spent))
   const total = weekDates.reduce((n, d) => n + spent(d), 0)
-  const items = state.transactions
+  const items = ledger.transactions
     .filter(
       (t) =>
         (filter === 'all' || (filter === 'today' ? t.date === today : t.category === filter)) &&
@@ -1017,7 +1025,7 @@ function RecordsPage({ state, today, open }: { state: AppState; today: string; o
       </button>
       <div className="section-heading">
         <h2>
-          내 거래내역 <span className="count">{state.transactions.length}</span>
+          내 거래내역 <span className="count">{ledger.transactions.length}</span>
         </h2>
         <ListFilter size={17} />
       </div>
@@ -1044,7 +1052,7 @@ function RecordsPage({ state, today, open }: { state: AppState; today: string; o
           <section className="transaction-group" key={d}>
             <div className="group-heading">
               <span>{d === today ? '오늘' : dateLabel(d)}</span>
-              <span>{state.reconciledDates.includes(d) ? '정산 완료' : '확인 전'}</span>
+              <span>{ledger.reconciledDates.includes(d) ? '정산 완료' : '확인 전'}</span>
             </div>
             {items
               .filter((t) => t.date === d)
@@ -1066,56 +1074,49 @@ function RecordsPage({ state, today, open }: { state: AppState; today: string; o
         </span>
         <span>
           <strong>계좌 내역 업데이트</strong>
-          <small>
-            {state.lastBankSync
-              ? `마지막 업데이트 ${new Date(state.lastBankSync).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-              : '연결한 계좌의 최근 거래를 불러와요'}
-          </small>
+          <small>연결한 계좌의 최근 거래를 불러와요</small>
         </span>
         <ChevronRight size={19} />
       </button>
       <button className="demo-link" onClick={() => open({ type: 'demoImport' })}>
         금융 연동 대신 예시 내역으로 시연하기
       </button>
-      <p className="footer-note">
-        계좌 업데이트, CSV, 캡처, 결제 알림으로 가져온 거래는 중복을 확인한 뒤 반영해요.
-      </p>
+      <p className="footer-note">CSV, 캡처로 가져온 거래는 중복을 확인한 뒤 반영해요.</p>
     </>
   )
 }
 
 function SettingsPage({
-  state,
+  ledger,
   open,
   onExport,
-  onRestore,
-  save,
+  onLogout,
+  run,
   notify,
 }: {
-  state: AppState
+  ledger: Ledger
   open: (m: Modal) => void
   onExport: () => void
-  onRestore: (f: File) => void
-  save: (s: AppState, m?: string) => boolean
+  onLogout: () => void
+  run: (task: () => Promise<unknown>, message: string) => Promise<void>
   notify: (s: string) => void
 }) {
-  const b = budget(state)
+  const b = ledger.budget
+  const saveSettings = (time: string, enabled: boolean, message: string) =>
+    run(() => ledgerApi.saveSettings(time, enabled), message)
   const requestNotifications = async () => {
-    if (state.notifications) {
-      save({ ...state, notifications: false }, '정산 알림을 껐어요.')
-      return
-    }
-    if (!('Notification' in window)) {
-      save(
-        { ...state, notifications: true },
+    if (ledger.notifications) return saveSettings(ledger.notificationTime, false, '정산 알림을 껐어요.')
+    if (!('Notification' in window))
+      return saveSettings(
+        ledger.notificationTime,
+        true,
         '앱 안에서 정산 시간을 알려드릴게요. 이 브라우저는 시스템 알림을 지원하지 않아요.',
       )
-      return
-    }
     try {
       const permission = await Notification.requestPermission()
-      save(
-        { ...state, notifications: true },
+      await saveSettings(
+        ledger.notificationTime,
+        true,
         permission === 'granted'
           ? '앱이 열려 있을 때 정산 알림을 드려요.'
           : '앱 안의 알림만 켰어요. 브라우저 알림은 허용되지 않았어요.',
@@ -1131,7 +1132,7 @@ function SettingsPage({
           <span className="eyebrow">내 돈에 나만의 기준을</span>
           <h1>내 예산</h1>
         </div>
-        <span className="profile-avatar">{state.profile.name.slice(0, 1)}</span>
+        <span className="profile-avatar">{ledger.profile.name.slice(0, 1)}</span>
       </div>
       <button className="account-card" onClick={() => open({ type: 'profile' })}>
         <span className="item-icon mint">
@@ -1140,7 +1141,7 @@ function SettingsPage({
         <span>
           <small>현재 사용 가능 잔액</small>
           <strong>
-            <Amount value={state.profile.balance} />
+            <Amount value={ledger.profile.balance} />
           </strong>
         </span>
         <Pencil size={18} />
@@ -1156,14 +1157,14 @@ function SettingsPage({
         <Row
           icon={Landmark}
           title="다음 수입"
-          subtitle={`${dateLabel(state.profile.incomeDate)} · 입금 전에는 예산에서 제외`}
-          value={`${won(state.profile.incomeAmount)}원`}
+          subtitle={`${dateLabel(ledger.profile.incomeDate)} · 입금 전에는 예산에서 제외`}
+          value={`${won(ledger.profile.incomeAmount)}원`}
         />
         <Row
           icon={ReceiptText}
           color="peach"
           title="미납 고정지출"
-          subtitle={`${state.fixed.length}개 항목 등록`}
+          subtitle={`${ledger.fixed.length}개 항목 등록`}
           value={`${won(b.fixedReserve)}원`}
           onClick={() => open({ type: 'budget' })}
         />
@@ -1171,14 +1172,14 @@ function SettingsPage({
           icon={ShieldCheck}
           color="lilac"
           title="보호할 돈"
-          subtitle={`${state.profile.protectionCycle} 검토 · 현재 구간 총액`}
-          value={`${won(state.profile.protectedAmount)}원`}
+          subtitle={`${ledger.profile.protectionCycle} 검토 · 현재 구간 총액`}
+          value={`${won(ledger.profile.protectedAmount)}원`}
         />
         <Row
           icon={Wallet}
           color="sand"
           title="미결제 카드액"
-          value={`${won(state.profile.cardOutstanding)}원`}
+          value={`${won(ledger.profile.cardOutstanding)}원`}
         />
       </section>
       <section className="settings-section">
@@ -1192,8 +1193,8 @@ function SettingsPage({
         <p className="section-description">
           계획할 때 참고할 나만의 메모예요. AI에 전송하거나 예산을 자동 변경하지 않아요.
         </p>
-        {state.memories.length ? (
-          state.memories.map((m) => (
+        {ledger.memories.length ? (
+          ledger.memories.map((m) => (
             <button key={m.id} className="memory-card" onClick={() => open({ type: 'memory', memory: m })}>
               <span>
                 <strong>{m.title}</strong>
@@ -1223,10 +1224,10 @@ function SettingsPage({
             <small>앱이 열려 있을 때만 동작</small>
           </span>
           <button
-            className={`switch ${state.notifications ? 'on' : ''}`}
+            className={`switch ${ledger.notifications ? 'on' : ''}`}
             aria-label="정산 알림"
             role="switch"
-            aria-checked={state.notifications}
+            aria-checked={ledger.notifications}
             onClick={() => void requestNotifications()}
           >
             <span />
@@ -1235,9 +1236,10 @@ function SettingsPage({
         <Field label="알림 받을 시간">
           <input
             type="time"
-            value={state.notificationTime}
-            onChange={(e) => {
-              if (e.target.value) save({ ...state, notificationTime: e.target.value })
+            defaultValue={ledger.notificationTime}
+            onBlur={(e) => {
+              if (e.target.value && e.target.value !== ledger.notificationTime)
+                void saveSettings(e.target.value, ledger.notifications, '알림 시간을 바꿨어요.')
             }}
           />
         </Field>
@@ -1245,7 +1247,7 @@ function SettingsPage({
           앱을 닫은 상태의 푸시에는 서버 연결이 필요해요. iPhone 시스템 알림은 홈 화면 설치와 브라우저 지원이
           필요할 수 있어요.
         </p>
-        {state.notifications && (
+        {ledger.notifications && (
           <button
             className="text-button"
             onClick={async () => {
@@ -1265,33 +1267,19 @@ function SettingsPage({
         )}
       </section>
       <section className="settings-section">
-        <h2>내 데이터</h2>
+        <h2>내 계정과 데이터</h2>
+        <Row
+          icon={UserRound}
+          title={ledger.guest ? '가입 없이 둘러보는 중' : ledger.email || '내 계정'}
+          subtitle={ledger.guest ? '예시 데이터예요. 내 예산은 가입 후 시작해요.' : '기록은 계정에 저장돼요'}
+        />
         <Row
           icon={Download}
-          title="백업 파일 저장"
-          subtitle="예산과 모든 기록을 JSON으로 보관"
+          title="내 데이터 내려받기"
+          subtitle="예산과 모든 기록을 JSON 파일로 보관"
           value={<ChevronRight size={18} />}
           onClick={onExport}
         />
-        <label className="file-row">
-          <span className="item-icon blue">
-            <Upload size={20} />
-          </span>
-          <span className="row-copy">
-            <strong>백업 불러오기</strong>
-            <small>현재 기록을 백업 파일로 교체</small>
-          </span>
-          <ChevronRight size={18} />
-          <input
-            aria-label="백업 파일 선택"
-            type="file"
-            accept=".json,application/json"
-            onChange={(e) => {
-              if (e.target.files?.[0]) onRestore(e.target.files[0])
-              e.target.value = ''
-            }}
-          />
-        </label>
         <Row
           icon={CircleHelp}
           color="sand"
@@ -1302,22 +1290,29 @@ function SettingsPage({
         <Row
           icon={Trash2}
           color="pink"
-          title="모든 기록 초기화"
+          title={ledger.guest ? '내 예산으로 시작' : '모든 기록 초기화'}
           value={<ChevronRight size={18} />}
           onClick={() => open({ type: 'reset' })}
+        />
+        <Row
+          icon={LogOut}
+          color="sand"
+          title="로그아웃"
+          value={<ChevronRight size={18} />}
+          onClick={onLogout}
         />
       </section>
       <div className="privacy-card">
         <LockKeyhole size={18} />
         <p>
-          데이터는 이 브라우저에만 저장돼요.
+          기록은 내 계정에 저장돼요.
           <br />
-          브라우저 데이터를 지우면 사라지니 백업해주세요.
+          로그인 정보는 이 기기에 오래 보관하지 않아요.
         </p>
       </div>
       <div className="settings-footer">
         <Brand />
-        <span>나답게 쓰는 매일 · v1.0</span>
+        <span>나답게 쓰는 매일 · v1.1</span>
       </div>
     </>
   )
@@ -1345,12 +1340,12 @@ function TransactionRow({ tx, onClick }: { tx: Transaction; onClick: () => void 
     </button>
   )
 }
-function BudgetDetail({ state, today, open }: { state: AppState; today: string; open: (m: Modal) => void }) {
-  const b = budget(state, today)
+function BudgetDetail({ ledger, open }: { ledger: Ledger; open: (m: Modal) => void }) {
+  const b = ledger.budget
   return (
     <div className="form-stack">
       <div className="detail-hero">
-        <span>오늘부터 {dateLabel(addDays(state.profile.incomeDate, -1))}까지</span>
+        <span>오늘부터 {dateLabel(addDays(b.incomeDate, -1))}까지</span>
         <h2>
           하루 <Amount value={b.daily} />
         </h2>
@@ -1359,12 +1354,12 @@ function BudgetDetail({ state, today, open }: { state: AppState; today: string; 
       <div className="calculation">
         <div>
           <span>현재 사용 가능 잔액</span>
-          <strong>{won(state.profile.balance)}원</strong>
+          <strong>{won(b.balance)}원</strong>
         </div>
         {[
           { title: '미납 고정지출', amount: b.fixedReserve },
-          { title: '미결제 카드 이용액', amount: Math.max(0, state.profile.cardOutstanding) },
-          { title: '보호할 저축 · 비상금', amount: state.profile.protectedAmount },
+          { title: '미결제 카드 이용액', amount: Math.max(0, b.cardOutstanding) },
+          { title: '보호할 저축 · 비상금', amount: b.protectedAmount },
           { title: '확정한 예정 지출', amount: b.plannedReserve },
         ].map((r) => (
           <div key={r.title}>
@@ -1399,13 +1394,13 @@ function BudgetDetail({ state, today, open }: { state: AppState; today: string; 
         </p>
       )}
       <h3>고정지출별 확인</h3>
-      {state.fixed.length ? (
-        state.fixed.map((f) => (
+      {ledger.fixed.length ? (
+        ledger.fixed.map((f) => (
           <Row
             key={f.id}
             title={f.title}
-            subtitle={`${dateLabel(f.date)} · ${isClosed(state, f.id) ? '납부 완료' : f.date >= state.profile.incomeDate ? '다음 구간' : '미납'}`}
-            value={`${won(remainingFor(state, f))}원`}
+            subtitle={`${dateLabel(f.date)} · ${f.closed ? '납부 완료' : f.nextPeriod ? '다음 구간' : '미납'}`}
+            value={`${won(f.remaining)}원`}
             onClick={() => open({ type: 'transaction', fixedId: f.id })}
           />
         ))
@@ -1420,19 +1415,18 @@ function BudgetDetail({ state, today, open }: { state: AppState; today: string; 
   )
 }
 function PlanDetail({
-  state,
+  ledger,
   plan,
   open,
   onDelete,
 }: {
-  state: AppState
-  plan: Plan
+  ledger: Ledger
+  plan: PlanView
   open: (m: Modal) => void
   onDelete: () => void
 }) {
   const [cancel, setCancel] = useState(false)
-  const closed = isClosed(state, plan.id)
-  const actual = actualFor(state, plan.id)
+  const linked = ledger.transactions.filter((t) => t.planId === plan.id)
   return (
     <div className="form-stack">
       <div className="detail-hero">
@@ -1450,20 +1444,18 @@ function PlanDetail({
       <div className="calculation">
         <div>
           <span>실제 소비</span>
-          <strong>{won(actual)}원</strong>
+          <strong>{won(plan.actual)}원</strong>
         </div>
         <div>
-          <span>{closed ? '생활비로 돌려준 차액' : '남은 확보액'}</span>
-          <strong className="green">
-            {won(closed ? plan.amount - actual : remainingFor(state, plan))}원
-          </strong>
+          <span>{plan.closed ? '생활비로 돌려준 차액' : '남은 확보액'}</span>
+          <strong className="green">{won(plan.closed ? plan.amount - plan.actual : plan.remaining)}원</strong>
         </div>
       </div>
-      {closed ? (
+      {plan.closed ? (
         <p className="info-box">
           <CheckCheck size={18} />
           정산 완료.{' '}
-          {plan.amount >= actual
+          {plan.amount >= plan.actual
             ? '덜 쓴 돈은 일반 생활비에 반영됐어요.'
             : '초과분은 남은 생활비에 반영됐어요.'}{' '}
           이 기록은 같은 카테고리의 다음 계획 금액을 제안할 때 참고해요.
@@ -1480,12 +1472,10 @@ function PlanDetail({
           </Button>
         </>
       )}
-      {state.transactions
-        .filter((t) => t.planId === plan.id)
-        .map((t) => (
-          <TransactionRow key={t.id} tx={t} onClick={() => open({ type: 'transactionDetail', tx: t })} />
-        ))}
-      {!state.transactions.some((t) => t.planId === plan.id) &&
+      {linked.map((t) => (
+        <TransactionRow key={t.id} tx={t} onClick={() => open({ type: 'transactionDetail', tx: t })} />
+      ))}
+      {!linked.length &&
         (cancel ? (
           <div className="warning-box">
             <p>계획을 삭제하고 확보한 돈을 생활비로 돌릴까요?</p>
@@ -1502,19 +1492,20 @@ function PlanDetail({
   )
 }
 function TransactionDetail({
-  state,
+  ledger,
   tx,
   open,
   onDelete,
 }: {
-  state: AppState
+  ledger: Ledger
   tx: Transaction
   open: (m: Modal) => void
   onDelete: () => void
 }) {
   const [confirming, setConfirming] = useState(false)
   const link =
-    state.plans.find((p) => p.id === tx.planId)?.title || state.fixed.find((f) => f.id === tx.fixedId)?.title
+    ledger.plans.find((p) => p.id === tx.planId)?.title ||
+    ledger.fixed.find((f) => f.id === tx.fixedId)?.title
   return (
     <div className="form-stack">
       <div className="detail-hero">
@@ -1560,20 +1551,20 @@ function TransactionDetail({
   )
 }
 function Reconcile({
-  state,
-  today,
+  ledger,
   open,
   onSave,
 }: {
-  state: AppState
-  today: string
+  ledger: Ledger
   open: (m: Modal) => void
-  onSave: (s: AppState) => void
+  onSave: (date: string) => Promise<void>
 }) {
-  const pending = budget(state, today).pending
+  const today = ledger.budget.today
+  const pending = ledger.budget.pending
   const [date, setDate] = useState(pending[0] || addDays(today, -1))
   const [checked, setChecked] = useState(false)
-  const transactions = state.transactions.filter((t) => t.date === date)
+  const [error, setError] = useState('')
+  const transactions = ledger.transactions.filter((t) => t.date === date)
   return (
     <div className="form-stack">
       <div className="form-intro compact">
@@ -1643,40 +1634,25 @@ function Reconcile({
           <small>확인 전 날짜는 잠정 상태로 유지해요.</small>
         </span>
       </label>
+      <ErrorText message={error} />
       <Button
         disabled={!checked || !date || date > today}
-        onClick={() =>
-          onSave({
-            ...state,
-            reconciledDates: [...new Set([...state.reconciledDates, date])],
-            lastReconciled: new Date().toISOString(),
-          })
-        }
+        onClick={() => onSave(date).catch((e) => setError(errorMessage(e)))}
       >
-        {state.reconciledDates.includes(date) ? '다시 확인 완료' : '하루 정산 완료'}
+        {ledger.reconciledDates.includes(date) ? '다시 확인 완료' : '하루 정산 완료'}
         <Check size={17} />
       </Button>
-      {state.lastReconciled && (
-        <p className="field-hint">마지막 확인: {new Date(state.lastReconciled).toLocaleString('ko-KR')}</p>
+      {ledger.lastReconciled && (
+        <p className="field-hint">마지막 확인: {new Date(ledger.lastReconciled).toLocaleString('ko-KR')}</p>
       )}
     </div>
   )
 }
-function Notifications({ state, today, open }: { state: AppState; today: string; open: (m: Modal) => void }) {
-  const b = budget(state, today)
+function Notifications({ ledger, open }: { ledger: Ledger; open: (m: Modal) => void }) {
+  const b = ledger.budget
   return (
     <div className="form-stack">
       <p className="section-description">지금 확인하면 좋은 내용이에요.</p>
-      {!!state.inbox?.length && (
-        <Row
-          icon={AlertTriangle}
-          color="yellow"
-          title={`중복이 의심되는 거래 ${state.inbox.length}건`}
-          subtitle="이미 있는 거래인지 확인하고 추가할지 골라주세요."
-          value={<ChevronRight size={17} />}
-          onClick={() => open({ type: 'inbox' })}
-        />
-      )}
       {b.provisional && (
         <Row
           icon={ReceiptText}
@@ -1700,7 +1676,7 @@ function Notifications({ state, today, open }: { state: AppState; today: string;
           subtitle="확보액 또는 소비 계획을 조정해주세요."
           onClick={() => open({ type: 'profile' })}
         />
-      )}{' '}
+      )}
       {b.days <= 0 && (
         <Row
           icon={Landmark}
@@ -1708,9 +1684,9 @@ function Notifications({ state, today, open }: { state: AppState; today: string;
           subtitle="실제 입금 기록 후 다음 수입일을 수정해주세요."
           onClick={() => open({ type: 'profile' })}
         />
-      )}{' '}
-      {state.plans
-        .filter((p) => p.confirmed && p.date < today && !isClosed(state, p.id))
+      )}
+      {ledger.plans
+        .filter((p) => p.confirmed && p.date < b.today && !p.closed)
         .map((p) => (
           <Row
             key={p.id}
@@ -1733,19 +1709,22 @@ function MemoryForm({
   onDelete,
 }: {
   initial?: Memory
-  onSave: (m: Memory) => void
+  onSave: (m: Memory) => Promise<void>
   onDelete?: () => void
 }) {
   const [title, setTitle] = useState(initial?.title || '')
   const [text, setText] = useState(initial?.text || '')
   const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState('')
   return (
     <form
       className="form-stack"
       onSubmit={(e) => {
         e.preventDefault()
         if (title.trim() && text.trim())
-          onSave({ id: initial?.id || uid(), title: title.trim(), text: text.trim() })
+          onSave({ id: initial?.id || uid(), title: title.trim(), text: text.trim() }).catch((err) =>
+            setError(errorMessage(err)),
+          )
       }}
     >
       <p className="intro-copy">
@@ -1770,6 +1749,7 @@ function MemoryForm({
           placeholder="예: 회식 다음 날에는 식비를 여유 있게 잡기"
         />
       </Field>
+      <ErrorText message={error} />
       <Button type="submit">
         기억해두기
         <Check size={17} />
@@ -1785,9 +1765,18 @@ function MemoryForm({
     </form>
   )
 }
-function CalendarImport({ state, onSave }: { state: AppState; onSave: (s: AppState) => void }) {
+function CalendarImport({
+  ledger,
+  onSave,
+}: {
+  ledger: Ledger
+  onSave: (items: Array<{ title: string; date: string }>) => Promise<void>
+}) {
   const [items, setItems] = useState<Array<{ title: string; date: string; selected: boolean }>>([])
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const exists = (item: { title: string; date: string }) =>
+    ledger.plans.some((p) => p.title === item.title && p.date === item.date)
   return (
     <div className="form-stack">
       <p>캘린더에서 내보낸 .ics 파일을 불러올 수 있어요. 금액이 없는 일정은 미확정 상태로 저장해요.</p>
@@ -1804,17 +1793,12 @@ function CalendarImport({ state, onSave }: { state: AppState; onSave: (s: AppSta
             if (!file) return
             try {
               if (file.size > 1e6) throw new Error('1MB 이하 파일을 선택해주세요.')
-              const events = parseCalendar(await file.text()).filter((p) => p.date >= localDate())
+              const events = parseCalendar(await file.text()).filter((p) => p.date >= ledger.budget.today)
               const unique = events.filter(
                 (p, i) => events.findIndex((x) => x.title === p.title && x.date === p.date) === i,
               )
               if (!unique.length) throw new Error('오늘 이후의 일정을 찾지 못했어요.')
-              setItems(
-                unique.map((p) => ({
-                  ...p,
-                  selected: !state.plans.some((plan) => plan.title === p.title && plan.date === p.date),
-                })),
-              )
+              setItems(unique.map((p) => ({ ...p, title: p.title.slice(0, 60), selected: !exists(p) })))
               setError('')
             } catch (err) {
               setError((err as Error).message)
@@ -1837,9 +1821,7 @@ function CalendarImport({ state, onSave }: { state: AppState; onSave: (s: AppSta
             {item.title}
             <small>
               {dateLabel(item.date)}
-              {state.plans.some((p) => p.title === item.title && p.date === item.date)
-                ? ' · 이미 등록된 일정'
-                : ''}
+              {exists(item) ? ' · 이미 등록된 일정' : ''}
             </small>
           </span>
         </label>
@@ -1850,34 +1832,27 @@ function CalendarImport({ state, onSave }: { state: AppState; onSave: (s: AppSta
       </p>
       <ErrorText message={error} />
       <Button
-        disabled={!items.some((i) => i.selected)}
-        onClick={() =>
-          onSave({
-            ...state,
-            plans: [
-              ...state.plans,
-              ...items
-                .filter((i) => i.selected)
-                .map((i) => ({
-                  id: uid(),
-                  title: i.title,
-                  date: i.date,
-                  amount: 0,
-                  confirmed: false,
-                  category: '약속' as const,
-                  note: '캘린더에서 가져온 일정 · 내 부담 금액 확인 필요',
-                })),
-            ],
-          })
-        }
+        disabled={saving || !items.some((i) => i.selected)}
+        onClick={() => {
+          setSaving(true)
+          onSave(items.filter((i) => i.selected))
+            .catch((e) => setError(errorMessage(e)))
+            .finally(() => setSaving(false))
+        }}
       >
         선택 일정 불러오기
       </Button>
     </div>
   )
 }
-function DemoImport({ state, onSave }: { state: AppState; onSave: (s: AppState) => void }) {
-  const date = addDays(localDate(), -1)
+function DemoImport({
+  ledger,
+  onSave,
+}: {
+  ledger: Ledger
+  onSave: (task: () => Promise<void>) => Promise<void>
+}) {
+  const date = addDays(ledger.budget.today, -1)
   const [error, setError] = useState('')
   const [checked, setChecked] = useState(false)
   const examples = [
@@ -1900,13 +1875,15 @@ function DemoImport({ state, onSave }: { state: AppState; onSave: (s: AppState) 
       <ErrorText message={error} />
       <Button
         disabled={!checked}
-        onClick={() => {
-          try {
-            let next = state
-            for (const t of examples) {
-              if (isDuplicate(next, { ...t, date }))
+        onClick={() =>
+          onSave(async () => {
+            for (const t of examples)
+              if (
+                (await ledgerApi.duplicates({ ...t, date, kind: 'expense' })).some((d) => d.level === 'EXACT')
+              )
                 throw new Error('이미 같은 예시 거래가 있어요. 중복 반영하지 않았어요.')
-              next = addTransaction(next, {
+            for (const t of examples)
+              await ledgerApi.createTransaction({
                 ...t,
                 id: uid(),
                 date,
@@ -1914,14 +1891,52 @@ function DemoImport({ state, onSave }: { state: AppState; onSave: (s: AppState) 
                 method: 'cash',
                 source: 'demo',
               })
-            }
-            onSave(next)
-          } catch (e) {
-            setError((e as Error).message)
-          }
-        }}
+          }).catch((e) => setError(errorMessage(e)))
+        }
       >
         예시 거래 2건 반영
+      </Button>
+    </div>
+  )
+}
+function ResetConfirm({
+  ledger,
+  onExport,
+  onSignUp,
+  onReset,
+}: {
+  ledger: Ledger
+  onExport: () => void
+  onSignUp: () => void
+  onReset: () => void
+}) {
+  if (ledger.guest)
+    return (
+      <div className="form-stack">
+        <span className="intro-icon">
+          <UserRound />
+        </span>
+        <h2>내 예산으로 시작할까요?</h2>
+        <p>둘러보던 예시 데이터는 두고, 계정을 만들어 내 잔액과 수입일부터 설정해요.</p>
+        <Button onClick={onSignUp}>
+          가입하고 시작하기
+          <ArrowRight size={17} />
+        </Button>
+      </div>
+    )
+  return (
+    <div className="form-stack">
+      <span className="intro-icon">
+        <RefreshCw />
+      </span>
+      <h2>모든 기록을 지우고 새로 시작할까요?</h2>
+      <p>계정에 저장된 예산, 계획, 거래, 메모가 모두 삭제돼요. 보관할 기록은 먼저 내려받아주세요.</p>
+      <Button variant="secondary" onClick={onExport}>
+        <Download size={17} />
+        기존 데이터 내려받기
+      </Button>
+      <Button variant="danger" onClick={onReset}>
+        모든 기록 지우고 시작
       </Button>
     </div>
   )
@@ -1944,22 +1959,20 @@ function Help() {
         신용카드 소비는 미결제액으로 확보하고, 카드대금 납부는 잔액과 미결제액을 같이 줄여요. 환불은 원래
         결제에 연결하며, 내 계좌 사이 이체는 소비로 보지 않아요.
       </p>
+      <h3>같은 결제를 두 번 넣지 않아요</h3>
+      <p>
+        캡처·CSV·직접 입력으로 이미 있는 결제와 같아 보이는 거래를 추가하면 한 번 더 물어봐요. 가맹점 표기가
+        조금 달라도 같은 날 같은 금액이면 확인해요.
+      </p>
       <h3>다음 수입일이 되면</h3>
       <p>
-        실제 입금을 ‘수입’ 거래로 기록한 뒤 다음 수입일과 고정지출을 다시 설정해주세요. 현재 버전은 수입
-        구간과 고정지출을 자동 반복하지 않아요. 입금 예정액을 미리 쓸 수 있는 돈으로 취급하지 않아요.
+        실제 입금을 ‘수입’ 거래로 기록한 뒤 다음 수입일과 고정지출을 다시 설정해주세요. 수입 구간과 고정지출은
+        자동 반복하지 않아요. 입금 예정액을 미리 쓸 수 있는 돈으로 취급하지 않아요.
       </p>
-      <h3>캡처와 계획 도우미</h3>
+      <h3>데이터 보관</h3>
       <p>
-        캡처는 기기에서 문자를 읽고 사용자 확인 후 반영해요. 첫 인식에는 언어 자료 다운로드가 필요해요. 자연어
-        계획은 날짜·금액·카테고리를 규칙으로 추출하며, 서버 AI는 연결되지 않았어요. 금액 제안은 실제로 정산한
-        같은 카테고리 계획을 근거로 해요.
-      </p>
-      <h3>데이터 보관과 알림</h3>
-      <p>
-        계정·서버·금융 연동이 없는 로컬 버전이에요. 기록은 현재 브라우저에 저장되고 다른 기기와 동기화되지
-        않아요. 캡처 원본은 저장하지 않아요. 브라우저 데이터 삭제 전 백업해주세요. 앱을 닫은 상태의 푸시는
-        지원하지 않아요.
+        예산과 기록은 계정에 저장돼 다른 기기에서도 이어서 볼 수 있어요. 캡처 원본은 저장하지 않아요. 서버에
+        연결되지 않으면 마지막으로 불러온 금액을 보여주고, 변경은 연결된 뒤에 할 수 있어요.
       </p>
     </div>
   )
@@ -1977,14 +1990,11 @@ function modalTitle(modal: Modal) {
     help: 'flex-able 이용 안내',
     reset: '새로 시작하기',
     demoImport: '예시 내역 시연',
-    csv: 'CSV로 거래 가져오기',
-    inbox: '중복 의심 거래 확인',
-    bankSync: '계좌 내역 업데이트',
-    autoImport: '결제 알림 자동 등록',
     planDetail: '소비 계획',
     transactionDetail: '거래 상세',
     memory: '기억해둘 소비 기준',
-    restore: '백업 복원',
+    csv: 'CSV로 거래 가져오기',
+    bankSync: '계좌 내역 업데이트',
   }[modal.type]
 }
 function downloadFile(name: string, content: string, type: string) {

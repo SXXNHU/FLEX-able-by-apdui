@@ -69,6 +69,18 @@ class UserDataApiTest {
 	}
 
 	@Test
+	void 설정_전에도_입력값으로_하루_생활비를_미리_계산한다() {
+		Http user = guest(false);
+		String body = """
+				{"balance":300000,"incomeDate":"2026-10-09","protectedAmount":0,"cardOutstanding":0,
+				 "fixed":[%s]}""";
+		assertThat(user.post("/api/budgets/simulate", body.formatted("")).body()).contains("\"daily\":30000");
+		assertThat(user.post("/api/budgets/simulate",
+				body.formatted("{\"amount\":100000,\"date\":\"2026-10-01\"}")).body()).contains("\"daily\":20000");
+		assertThat(user.get("/api/profile").statusCode()).isEqualTo(404);
+	}
+
+	@Test
 	void 직접_입력_전_같은_결제가_있는지_알려준다() {
 		Http user = guest(true);
 		HttpResponse<String> found = user.post("/api/transactions/duplicates",

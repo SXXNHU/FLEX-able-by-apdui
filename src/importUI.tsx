@@ -1,59 +1,51 @@
 import { useState } from 'react'
-import { AlertTriangle, Check, FileSpreadsheet, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { AlertTriangle, FileSpreadsheet, Plus } from 'lucide-react'
 import {
-  addTransaction,
   categories,
   dateLabel,
-  findDuplicates,
   localDate,
   sourceLabels,
   uid,
   won,
-  type AppState,
   type Category,
-  type DuplicateMatch,
-  type PendingImport,
-  type Transaction,
-  type TransactionSource,
+  type Ledger,
 } from './domain'
+import { decodeCsv } from './imports'
+import { ApiError, errorMessage } from './api/client'
 import {
-  bankRows,
-  csvRows,
-  decodeCsv,
-  detectCsvMapping,
-  guessCategory,
-  parseCsv,
+  importApi,
+  type CandidatesResult,
   type CsvMapping,
-  type ImportedRow,
-} from './imports'
+  type DuplicateInfo,
+  type ImportCandidate,
+  type ImportItem,
+} from './api/ledger'
 import { Button, ErrorText, Field, MoneyInput } from './ui'
 
-export type Candidate = {
-  id: string
-  title: string
-  amount: number
-  date: string
+/** 화면에서 고칠 수 있는 후보. 중복 정보는 서버가 후보를 만들 때 판정한 값이다. */
+export type Candidate = ImportItem & {
   selected: boolean
-  category: Category
-  method: 'cash' | 'card'
   link: string
-  closesItem: boolean
-  kind: 'expense' | 'income' | 'transfer'
-  externalId?: string
+  duplicates: DuplicateInfo[]
+  sameAsCandidate: number | null
+  alreadyImported: boolean
 }
-export function toCandidates(rows: ImportedRow[], method: 'cash' | 'card' = 'cash'): Candidate[] {
+export function toCandidates(rows: ImportCandidate[]): Candidate[] {
   return rows.map((r) => ({
     id: uid(),
     title: r.title,
     amount: r.amount,
     date: r.date,
-    selected: true,
-    category: r.category || guessCategory(r.title),
-    method: r.kind === 'expense' ? r.method || method : 'cash',
-    link: '',
-    closesItem: false,
+    category: r.category,
     kind: r.kind,
-    externalId: r.externalId,
+    method: r.method,
+    closesItem: false,
+    sourceEventId: r.sourceEventId,
+    selected: !r.alreadyImported,
+    link: '',
+    duplicates: r.duplicates,
+    sameAsCandidate: r.sameAsCandidate,
+    alreadyImported: r.alreadyImported,
   }))
 }
 export function blankCandidate(date: string): Candidate {
@@ -62,16 +54,20 @@ export function blankCandidate(date: string): Candidate {
     title: '',
     amount: 0,
     date,
-    selected: true,
     category: '기타',
-    method: 'cash',
-    link: '',
-    closesItem: false,
     kind: 'expense',
+    method: 'cash',
+    closesItem: false,
+    selected: true,
+    link: '',
+    duplicates: [],
+    sameAsCandidate: null,
+    alreadyImported: false,
   }
 }
-function asTransaction(r: Candidate, source: TransactionSource): Transaction {
+function toItem(r: Candidate): ImportItem {
   const [kind, id] = r.link.split(':')
+  const expense = r.kind === 'expense'
   return {
     id: r.id,
     title: r.title.trim(),
@@ -79,94 +75,95 @@ function asTransaction(r: Candidate, source: TransactionSource): Transaction {
     date: r.date,
     category: r.category,
     kind: r.kind,
-    method: r.kind === 'expense' ? r.method : 'cash',
-    planId: r.kind === 'expense' && kind === 'plan' ? id : undefined,
-    fixedId: r.kind === 'expense' && kind === 'fixed' ? id : undefined,
-    closesItem: r.kind === 'expense' && !!r.link && r.closesItem,
-    source,
-    externalId: r.externalId,
+    method: expense ? r.method : 'cash',
+    planId: expense && kind === 'plan' ? id : undefined,
+    fixedId: expense && kind === 'fixed' ? id : undefined,
+    closesItem: expense && !!r.link && r.closesItem,
+    sourceEventId: r.sourceEventId,
   }
 }
-/** 이미 등록된 거래, 또는 같은 파일 안의 앞선 후보와 겹치는지 */
-function duplicateMap(state: AppState, rows: Candidate[], source: TransactionSource) {
-  const map = new Map<string, DuplicateMatch[]>()
-  const earlier: Transaction[] = []
-  for (const r of rows) {
-    const tx = asTransaction(r, source)
-    const found = [
-      ...findDuplicates(state.transactions, tx),
-      ...(r.selected ? findDuplicates(earlier, tx).filter((m) => m.level === 'exact') : []),
-    ]
-    if (found.length) map.set(r.id, found)
-    if (r.selected) earlier.push(tx)
-  }
-  return map
-}
-function DuplicateNote({ state, matches }: { state: AppState; matches: DuplicateMatch[] }) {
-  const m = matches[0]
-  const inBatch = !state.transactions.some((t) => t.id === m.tx.id)
+function DuplicateNote({ candidate, index }: { candidate: Candidate; index: number }) {
+  const d = candidate.duplicates[0]
+  if (candidate.alreadyImported)
+    return (
+      <p className="duplicate-note">
+        <AlertTriangle size={14} />
+        이미 가져온 거래예요. 다시 반영하지 않아요.
+      </p>
+    )
+  if (!d && candidate.sameAsCandidate === null) return null
   return (
     <p className="duplicate-note">
       <AlertTriangle size={14} />
-      {inBatch
-        ? '이 목록 안에 같은 거래가 한 번 더 있어요.'
-        : `이미 등록됨: ${m.tx.title} · ${won(m.tx.amount)}원 · ${dateLabel(m.tx.date)} (${sourceLabels[m.tx.source]})`}
+      {d
+        ? `이미 등록됨: ${d.title} · ${won(d.amount)}원 · ${dateLabel(d.date)} (${sourceLabels[d.source]})`
+        : `이 목록의 ${(candidate.sameAsCandidate ?? index) + 1}번 후보와 같은 거래예요.`}
     </p>
   )
 }
 
+/**
+ * 후보 검토와 반영. 중복의 최종 판정은 서버가 한다. 사용자가 확인하지 않은 중복이 있으면 서버가 거절하고,
+ * 그 항목을 "이미 있는 거래 같아요. 그래도 추가할까요?"로 다시 묻는다.
+ */
 export function CandidateList({
-  state,
+  ledger,
   rows,
   setRows,
   source,
   busy = false,
   fallbackDate,
-  onSave,
+  onSaved,
 }: {
-  state: AppState
+  ledger: Ledger
   rows: Candidate[]
   setRows: (update: (rows: Candidate[]) => Candidate[]) => void
-  source: TransactionSource
+  source: 'csv' | 'capture'
   busy?: boolean
   fallbackDate: string
-  onSave: (next: AppState) => void
+  onSaved: (count: number) => void
 }) {
   const [confirmed, setConfirmed] = useState(false)
-  const [asking, setAsking] = useState(false)
+  const [asking, setAsking] = useState<string[]>([])
+  const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const duplicates = duplicateMap(state, rows, source)
   const selected = rows.filter((r) => r.selected)
-  const selectedDuplicates = selected.filter((r) => duplicates.has(r.id))
+  const flagged = (r: Candidate) => r.duplicates.length > 0 || r.sameAsCandidate !== null
   const update = (id: string, patch: Partial<Candidate>) => {
-    setAsking(false)
+    setAsking([])
     setRows((items) => items.map((r) => (r.id === id ? { ...r, ...patch } : r)))
   }
-  const commit = (items: Candidate[]) => {
+  const commit = async (items: Candidate[], accept: string[] = []) => {
+    setError('')
+    if (!items.length) return setError('반영할 거래를 선택해주세요.')
+    setSaving(true)
     try {
-      if (!items.length) throw new Error('반영할 거래를 선택해주세요.')
-      let next = state
-      for (const r of items) next = addTransaction(next, asTransaction(r, source))
-      onSave(next)
+      const result = await importApi.import(source, items.map(toItem), accept)
+      setAsking([])
+      onSaved(result.created.length)
     } catch (e) {
-      setAsking(false)
-      setError((e as Error).message)
+      if (e instanceof ApiError && e.code === 'duplicate_requires_confirmation') {
+        setAsking((e.extra.items as string[]) || [])
+      } else {
+        setAsking([])
+        setError(errorMessage(e))
+      }
+    } finally {
+      setSaving(false)
     }
   }
   const save = () => {
-    setError('')
-    if (!selected.length) return setError('반영할 거래를 선택해주세요.')
     if (!confirmed) return setError('날짜·금액·거래 종류를 확인해주세요.')
-    if (selectedDuplicates.length) return setAsking(true)
-    commit(selected)
+    void commit(selected)
   }
+  const askingRows = selected.filter((r) => asking.includes(r.id))
   return (
     <>
       {rows.length > 1 && (
         <div className="candidate-toolbar">
           <span>
             후보 {rows.length}건 · 선택 {selected.length}건
-            {duplicates.size > 0 && <em> · 중복 의심 {duplicates.size}건</em>}
+            {rows.some(flagged) && <em> · 중복 의심 {rows.filter(flagged).length}건</em>}
           </span>
           <button
             type="button"
@@ -181,7 +178,7 @@ export function CandidateList({
         </div>
       )}
       {rows.map((r, index) => (
-        <div className={`candidate ${duplicates.has(r.id) ? 'duplicate' : ''}`} key={r.id}>
+        <div className={`candidate ${flagged(r) || r.alreadyImported ? 'duplicate' : ''}`} key={r.id}>
           <label className="check-row">
             <input
               type="checkbox"
@@ -189,9 +186,9 @@ export function CandidateList({
               onChange={(e) => update(r.id, { selected: e.target.checked })}
             />
             <strong>거래 후보 {index + 1}</strong>
-            {duplicates.has(r.id) && <span className="badge amber">중복 의심</span>}
+            {flagged(r) && <span className="badge amber">중복 의심</span>}
           </label>
-          {duplicates.has(r.id) && <DuplicateNote state={state} matches={duplicates.get(r.id)!} />}
+          <DuplicateNote candidate={r} index={index} />
           <Field label="상호 · 이름">
             <input value={r.title} maxLength={60} onChange={(e) => update(r.id, { title: e.target.value })} />
           </Field>
@@ -244,14 +241,14 @@ export function CandidateList({
               <Field label="연결할 예산">
                 <select value={r.link} onChange={(e) => update(r.id, { link: e.target.value })}>
                   <option value="">일반 생활비</option>
-                  {state.plans
+                  {ledger.plans
                     .filter((p) => p.confirmed)
                     .map((p) => (
                       <option key={p.id} value={`plan:${p.id}`}>
                         {p.title}
                       </option>
                     ))}
-                  {state.fixed.map((f) => (
+                  {ledger.fixed.map((f) => (
                     <option key={f.id} value={`fixed:${f.id}`}>
                       {f.title}
                     </option>
@@ -274,7 +271,7 @@ export function CandidateList({
       ))}
       <Button
         variant="secondary"
-        disabled={busy}
+        disabled={busy || saving}
         onClick={() => setRows((items) => [...items, blankCandidate(fallbackDate)])}
       >
         <Plus size={16} />
@@ -288,7 +285,7 @@ export function CandidateList({
               checked={confirmed}
               onChange={(e) => {
                 setConfirmed(e.target.checked)
-                setAsking(false)
+                setAsking([])
               }}
             />
             <span>
@@ -296,36 +293,39 @@ export function CandidateList({
               <small>환불과 카드대금 납부는 직접 입력 메뉴에서 원거래에 맞게 등록해주세요.</small>
             </span>
           </label>
-          {asking ? (
+          {askingRows.length ? (
             <div className="warning-box duplicate-confirm" role="alertdialog" aria-label="중복 거래 확인">
               <p>
                 <strong>이미 있는 거래 같아요. 그래도 추가할까요?</strong>
-                선택한 {selected.length}건 중 {selectedDuplicates.length}건이 기존 내역과 겹쳐 보여요.
+                선택한 {selected.length}건 중 {askingRows.length}건이 기존 내역과 겹쳐 보여요.
                 캡처·CSV·알림으로 같은 결제를 두 번 등록하면 잔액이 두 번 빠져요.
               </p>
               <ul>
-                {selectedDuplicates.slice(0, 5).map((r) => (
+                {askingRows.slice(0, 5).map((r) => (
                   <li key={r.id}>
                     {r.title} · {won(r.amount)}원 · {dateLabel(r.date)}
                   </li>
                 ))}
-                {selectedDuplicates.length > 5 && <li>외 {selectedDuplicates.length - 5}건</li>}
+                {askingRows.length > 5 && <li>외 {askingRows.length - 5}건</li>}
               </ul>
-              {selected.length > selectedDuplicates.length && (
-                <Button onClick={() => commit(selected.filter((r) => !duplicates.has(r.id)))}>
-                  중복 빼고 {selected.length - selectedDuplicates.length}건만 추가
+              {selected.length > askingRows.length && (
+                <Button
+                  disabled={saving}
+                  onClick={() => void commit(selected.filter((r) => !asking.includes(r.id)))}
+                >
+                  중복 빼고 {selected.length - askingRows.length}건만 추가
                 </Button>
               )}
-              <Button variant="danger" onClick={() => commit(selected)}>
+              <Button variant="danger" disabled={saving} onClick={() => void commit(selected, asking)}>
                 중복 포함 {selected.length}건 모두 추가
               </Button>
-              <Button variant="quiet" onClick={() => setAsking(false)}>
+              <Button variant="quiet" onClick={() => setAsking([])}>
                 돌아가서 확인하기
               </Button>
             </div>
           ) : (
-            <Button disabled={busy || !confirmed} onClick={save}>
-              선택한 {selected.length}건 반영하기
+            <Button disabled={busy || saving || !confirmed || !selected.length} onClick={save}>
+              {saving ? '반영하는 중' : `선택한 ${selected.length}건 반영하기`}
             </Button>
           )}
         </>
@@ -343,78 +343,72 @@ const columnLabels: Array<[keyof Omit<CsvMapping, 'headerRow'>, string]> = [
   ['deposit', '입금액 열'],
   ['type', '구분 열 (선택)'],
 ]
-export function CsvForm({ state, onSave }: { state: AppState; onSave: (next: AppState) => void }) {
-  const [table, setTable] = useState<string[][]>([])
-  const [mapping, setMapping] = useState<CsvMapping | null>(null)
+export function CsvForm({ ledger, onSaved }: { ledger: Ledger; onSaved: (count: number) => void }) {
+  const [text, setText] = useState('')
   const [fileName, setFileName] = useState('')
-  const [card, setCard] = useState(false)
+  const [result, setResult] = useState<CandidatesResult | null>(null)
   const [rows, setRows] = useState<Candidate[]>([])
-  const [skipped, setSkipped] = useState(0)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const build = (data: string[][], map: CsvMapping, asCard: boolean) => {
-    const result = csvRows(data, map)
-    setRows(toCandidates(result.rows, asCard ? 'card' : 'cash'))
-    setSkipped(result.skipped)
-    setError(result.rows.length ? '' : '가져올 거래를 찾지 못했어요. 아래에서 열을 직접 지정해주세요.')
+  const load = async (content: string, mapping?: CsvMapping | null, creditCard?: boolean | null) => {
+    setBusy(true)
+    setError('')
+    try {
+      const next = await importApi.candidates('csv', { text: content, mapping, creditCard })
+      setResult(next)
+      setRows(toCandidates(next.candidates))
+      if (!next.candidates.length)
+        setError(
+          next.csv?.detected
+            ? '가져올 거래를 찾지 못했어요. 아래에서 열을 직접 지정해주세요.'
+            : '날짜·금액 열을 찾지 못했어요. 머리행과 열을 직접 지정해주세요.',
+        )
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
   }
   const read = async (file: File) => {
     setError('')
     setRows([])
-    try {
-      if (/\.xlsx?$/i.test(file.name))
-        throw new Error('엑셀 파일은 엑셀에서 “다른 이름으로 저장 → CSV”로 바꾼 뒤 올려주세요.')
-      if (file.size > 5e6) throw new Error('5MB 이하 CSV 파일을 선택해주세요.')
-      const data = parseCsv(decodeCsv(await file.arrayBuffer()))
-      if (!data.length) throw new Error('파일에 내용이 없어요.')
-      const detected = detectCsvMapping(data)
-      const header = detected ? data[detected.headerRow].join(' ') : ''
-      const asCard = /이용하신곳|가맹점|승인/.test(header) && !/잔액|출금/.test(header)
-      setFileName(file.name)
-      setTable(data)
-      setCard(asCard)
-      const map = detected || {
-        headerRow: 0,
-        date: -1,
-        title: -1,
-        amount: -1,
-        withdraw: -1,
-        deposit: -1,
-        type: -1,
-      }
-      setMapping(map)
-      if (detected) build(data, detected, asCard)
-      else setError('날짜·금액 열을 찾지 못했어요. 머리행과 열을 직접 지정해주세요.')
-    } catch (e) {
-      setError((e as Error).message)
-    }
+    setResult(null)
+    if (/\.xlsx?$/i.test(file.name))
+      return setError('엑셀 파일은 엑셀에서 “다른 이름으로 저장 → CSV”로 바꾼 뒤 올려주세요.')
+    if (file.size > 5e6) return setError('5MB 이하 CSV 파일을 선택해주세요.')
+    const content = decodeCsv(await file.arrayBuffer())
+    if (!content.trim()) return setError('파일에 내용이 없어요.')
+    setFileName(file.name)
+    setText(content)
+    await load(content)
   }
+  const mapping = result?.csv?.mapping
+  const header = mapping ? result?.csv?.headRows[mapping.headerRow] || [] : []
   const remap = (patch: Partial<CsvMapping>) => {
-    if (!mapping) return
-    const next = { ...mapping, ...patch }
-    setMapping(next)
-    if (next.date >= 0 && (next.amount >= 0 || next.withdraw >= 0)) build(table, next, card)
+    if (mapping) void load(text, { ...mapping, ...patch }, result?.csv?.creditCard)
   }
-  const header = mapping ? table[mapping.headerRow] || [] : []
   return (
     <div className="form-stack">
       <p className="intro-copy">
-        은행·카드사 앱이나 홈페이지에서 내려받은 거래내역을 CSV로 올려주세요. 파일은 이 기기 안에서만 읽어요.
+        은행·카드사 앱이나 홈페이지에서 내려받은 거래내역을 CSV로 올려주세요. 파일 내용은 거래 후보를 만드는
+        데만 쓰고, 확인한 거래만 저장해요.
       </p>
-      <label className="upload-zone">
+      <label className={`upload-zone ${busy ? 'disabled' : ''}`}>
         <input
           aria-label="CSV 파일 선택"
           type="file"
           accept=".csv,.tsv,.txt,text/csv,.xls,.xlsx"
+          disabled={busy}
           onChange={(e) => {
             if (e.target.files?.[0]) void read(e.target.files[0])
             e.target.value = ''
           }}
         />
         <FileSpreadsheet size={28} />
-        <strong>{fileName || 'CSV 파일 선택'}</strong>
+        <strong>{busy ? '거래를 읽고 있어요' : fileName || 'CSV 파일 선택'}</strong>
         <span>엑셀에서 CSV로 저장한 파일 · UTF-8, EUC-KR 모두 가능 · 5MB 이하</span>
       </label>
-      {mapping && (
+      {mapping && result?.csv && (
         <>
           <details className="csv-mapping" open={!rows.length}>
             <summary>열 지정 확인 {rows.length ? `· ${rows.length}건 인식` : ''}</summary>
@@ -423,7 +417,7 @@ export function CsvForm({ state, onSave }: { state: AppState; onSave: (next: App
                 value={mapping.headerRow}
                 onChange={(e) => remap({ headerRow: Number(e.target.value) })}
               >
-                {table.slice(0, 30).map((r, i) => (
+                {result.csv.headRows.map((r, i) => (
                   <option key={i} value={i}>
                     {i + 1}행: {r.join(' | ').slice(0, 40)}
                   </option>
@@ -451,181 +445,51 @@ export function CsvForm({ state, onSave }: { state: AppState; onSave: (next: App
           <label className="check-row">
             <input
               type="checkbox"
-              checked={card}
-              onChange={(e) => {
-                setCard(e.target.checked)
-                setRows((items) =>
-                  items.map((r) =>
-                    r.kind === 'expense' ? { ...r, method: e.target.checked ? 'card' : 'cash' } : r,
-                  ),
-                )
-              }}
+              checked={result.csv.creditCard}
+              disabled={busy}
+              onChange={(e) => void load(text, mapping, e.target.checked)}
             />
             <span>
               신용카드 이용내역이에요
               <small>지출을 계좌 잔액 대신 미결제 카드액으로 반영해요. 체크카드는 해제해주세요.</small>
             </span>
           </label>
-          {skipped > 0 && (
-            <p className="field-hint">날짜·금액이 없거나 취소·미래 날짜인 {skipped}행은 제외했어요.</p>
+          {result.skipped > 0 && (
+            <p className="field-hint">날짜·금액이 없거나 취소·미래 날짜인 {result.skipped}행은 제외했어요.</p>
           )}
         </>
       )}
       <ErrorText message={error} />
-      {mapping && (
+      {result && (
         <CandidateList
-          state={state}
+          ledger={ledger}
           rows={rows}
           setRows={setRows}
           source="csv"
+          busy={busy}
           fallbackDate={localDate()}
-          onSave={onSave}
+          onSaved={onSaved}
         />
       )}
-    </div>
-  )
-}
-
-/** 자동 등록 중 중복이 의심되어 보류한 거래를 하나씩 확인한다. */
-export function InboxReview({
-  state,
-  onSave,
-}: {
-  state: AppState
-  onSave: (next: AppState, message: string) => void
-}) {
-  const [error, setError] = useState('')
-  const inbox = state.inbox || []
-  const without = (id: string) => inbox.filter((i) => i.id !== id)
-  const accept = (item: PendingImport) => {
-    try {
-      const next = addTransaction({ ...state, inbox: without(item.id) }, { ...item, id: uid() })
-      onSave(next, '확인한 거래를 추가했어요.')
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
-  if (!inbox.length) return <p className="info-box">확인할 거래가 없어요.</p>
-  return (
-    <div className="form-stack">
-      <p className="intro-copy">
-        자동으로 가져온 거래 중 이미 등록된 내역과 같아 보이는 건은 바로 반영하지 않고 여기에 모아뒀어요.
-      </p>
-      {inbox.map((item) => {
-        const match = findDuplicates(state.transactions, item)[0]
-        return (
-          <div className="candidate duplicate" key={item.id}>
-            <div className="inbox-head">
-              <span className="badge amber">{sourceLabels[item.source]}</span>
-              <strong>
-                {item.title} · {won(item.amount)}원
-              </strong>
-              <small>
-                {dateLabel(item.date)} ·{' '}
-                {item.kind === 'income' ? '입금' : item.method === 'card' ? '신용카드' : '계좌 결제'}
-              </small>
-            </div>
-            {match ? (
-              <DuplicateNote state={state} matches={[match]} />
-            ) : (
-              <p className="field-hint">겹쳐 보이던 기존 거래가 지금은 없어요.</p>
-            )}
-            <p className="inbox-question">이거 이미 있는 거래인데 추가하시겠어요?</p>
-            <div className="form-columns">
-              <Button
-                variant="secondary"
-                onClick={() => onSave({ ...state, inbox: without(item.id) }, '중복 거래를 버렸어요.')}
-              >
-                <Trash2 size={16} />
-                이미 있어요
-              </Button>
-              <Button onClick={() => accept(item)}>
-                <Check size={16} />
-                따로 추가
-              </Button>
-            </div>
-          </div>
-        )
-      })}
-      <ErrorText message={error} />
     </div>
   )
 }
 
 /**
- * 계좌 연동 서버(프록시)에서 최근 거래를 불러온다. 금융 API 키는 앱에 넣을 수 없어서 서버를 거친다.
- * 불러온 거래는 바로 반영하지 않고 CSV와 같은 검토 · 중복 확인을 거친다.
+ * 계좌 내역 업데이트. 금융 마이데이터는 허가 사업자만 직접 호출할 수 있어, 서버가 중계 API(예: CODEF)를
+ * 호출하는 방식으로 연결할 예정이다. 그전까지는 CSV와 캡처로 가져온다.
  */
-export const bankSyncUrl = (import.meta.env.VITE_BANK_SYNC_URL as string | undefined) || ''
-export function BankSyncForm({ state, onSave }: { state: AppState; onSave: (next: AppState) => void }) {
-  const [rows, setRows] = useState<Candidate[]>([])
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [loaded, setLoaded] = useState(false)
-  const since = state.lastBankSync ? state.lastBankSync.slice(0, 10) : state.trackingStart || localDate()
-  const load = async () => {
-    setBusy(true)
-    setError('')
-    try {
-      const url = new URL(bankSyncUrl)
-      url.searchParams.set('from', since)
-      url.searchParams.set('to', localDate())
-      const response = await fetch(url, { credentials: 'include' })
-      if (!response.ok) throw new Error(`계좌 연동 서버가 응답하지 않아요. (${response.status})`)
-      const fresh = bankRows(await response.json()).filter(
-        (r) => !state.transactions.some((t) => t.externalId === r.externalId),
-      )
-      setRows(toCandidates(fresh))
-      setLoaded(true)
-      if (!fresh.length) setError('새로 가져올 거래가 없어요.')
-    } catch (e) {
-      setError(
-        e instanceof TypeError
-          ? '계좌 연동 서버에 연결하지 못했어요. 네트워크를 확인해주세요.'
-          : (e as Error).message,
-      )
-    } finally {
-      setBusy(false)
-    }
-  }
-  if (!bankSyncUrl)
-    return (
-      <div className="form-stack">
-        <p className="warning-box">
-          계좌 연동 서버가 설정되지 않았어요. 금융 마이데이터는 금융위원회 허가를 받은 사업자만 직접 호출할 수
-          있어서, CODEF 같은 중계 API를 호출하는 서버를 따로 두고 <code>VITE_BANK_SYNC_URL</code>에 주소를
-          넣어야 해요.
-        </p>
-        <p className="field-hint">
-          그전까지는 은행 앱에서 거래내역을 CSV로 내려받아 올리거나, Android 앱의 결제 알림 자동 등록을
-          이용해주세요.
-        </p>
-      </div>
-    )
+export function BankSyncInfo() {
   return (
     <div className="form-stack">
-      <p className="intro-copy">
-        {since}부터 오늘까지 연결된 계좌·카드의 거래를 불러와요. 이미 가져온 거래는 다시 표시하지 않아요.
+      <p className="warning-box">
+        계좌 자동 연동은 아직 연결되지 않았어요. 금융 마이데이터는 금융위원회 허가를 받은 사업자만 직접 호출할
+        수 있어서, 서버가 중계 API를 호출하는 방식으로 준비하고 있어요.
       </p>
-      <Button variant="secondary" disabled={busy} onClick={() => void load()}>
-        <RefreshCw size={17} className={busy ? 'spin' : ''} />
-        {busy ? '불러오는 중' : loaded ? '다시 불러오기' : '계좌 내역 불러오기'}
-      </Button>
-      {state.lastBankSync && (
-        <p className="field-hint">마지막 업데이트: {new Date(state.lastBankSync).toLocaleString('ko-KR')}</p>
-      )}
-      <ErrorText message={error} />
-      {loaded && rows.length > 0 && (
-        <CandidateList
-          state={state}
-          rows={rows}
-          setRows={setRows}
-          source="bank"
-          busy={busy}
-          fallbackDate={localDate()}
-          onSave={(next) => onSave({ ...next, lastBankSync: new Date().toISOString() })}
-        />
-      )}
+      <p className="field-hint">
+        그전까지는 은행 앱에서 거래내역을 CSV로 내려받아 올리거나 결제내역 캡처를 올려주세요. 이미 등록된
+        결제는 추가 전에 한 번 더 물어봐요.
+      </p>
     </div>
   )
 }

@@ -57,6 +57,11 @@ final class LedgerControllers {
 			return service.today();
 		}
 
+		@PostMapping("/simulate")
+		BudgetResponse simulate(@Valid @RequestBody BudgetService.SimulateRequest request) {
+			return service.simulate(request);
+		}
+
 		@PostMapping("/preview")
 		PreviewResponse preview(@RequestParam(required = false) UUID planId, @Valid @RequestBody PlanRequest request) {
 			return service.preview(planId != null ? planId.toString() : null, request);
