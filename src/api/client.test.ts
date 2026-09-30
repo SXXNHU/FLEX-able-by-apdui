@@ -4,10 +4,19 @@ import {
   connectionStatus,
   errorMessage,
   onSignedOut,
+  refreshAccessToken,
   request,
   setAccessToken,
   setBaseUrlForTests,
 } from './client'
+import { setTokenStoreForTests, type TokenStore } from './tokenStore'
+
+const cookieStore: TokenStore = {
+  client: 'WEB',
+  load: async () => null,
+  save: async () => {},
+  clear: async () => {},
+}
 
 const json = (status: number, body: unknown, type = 'application/json') =>
   new Response(body === undefined ? null : JSON.stringify(body), {
@@ -19,6 +28,7 @@ let fetchMock: ReturnType<typeof vi.fn>
 beforeEach(() => {
   setBaseUrlForTests('http://api.test')
   setAccessToken('old-token')
+  setTokenStoreForTests(cookieStore)
   fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -106,5 +116,52 @@ describe('API 공통 계층', () => {
   it('본문 없는 응답(204)을 처리한다', async () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }))
     await expect(request('DELETE', '/api/plans/x')).resolves.toBeUndefined()
+  })
+})
+
+describe('앱(NATIVE) 토큰 저장', () => {
+  it('보안 저장소의 Refresh Token을 본문으로 보내고 새 값으로 바꿔 넣는다', async () => {
+    let stored: string | null = 'refresh-1'
+    setTokenStoreForTests({
+      client: 'NATIVE',
+      load: async () => stored,
+      save: async (t) => {
+        stored = t
+      },
+      clear: async () => {
+        stored = null
+      },
+    })
+    setAccessToken(null)
+    fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
+      if (url.endsWith('/api/auth/refresh')) {
+        expect(JSON.parse(init.body as string)).toEqual({ client: 'NATIVE', refreshToken: 'refresh-1' })
+        return json(200, { accessToken: 'a2', expiresIn: 900, userId: 'u', refreshToken: 'refresh-2' })
+      }
+      return json(200, {})
+    })
+    await expect(refreshAccessToken()).resolves.toBe(true)
+    expect(stored).toBe('refresh-2')
+  })
+
+  it('저장된 토큰이 없으면 서버에 묻지 않고, 거절되면 저장소를 비운다', async () => {
+    let stored: string | null = null
+    setTokenStoreForTests({
+      client: 'NATIVE',
+      load: async () => stored,
+      save: async (t) => {
+        stored = t
+      },
+      clear: async () => {
+        stored = null
+      },
+    })
+    await expect(refreshAccessToken()).resolves.toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    stored = 'revoked'
+    fetchMock.mockResolvedValue(json(401, { code: 'invalid_refresh_token' }))
+    await expect(refreshAccessToken()).resolves.toBe(false)
+    expect(stored).toBeNull()
   })
 })

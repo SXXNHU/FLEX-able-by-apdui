@@ -48,6 +48,38 @@ jobs:
             playwright-report/
             test-results/
           retention-days: 7
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      # 러너에 Android SDK가 설치되어 있다 (ANDROID_HOME).
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_API_BASE_URL: http://10.0.2.2:8080
+      - run: npx cap sync android
+      - run: ./gradlew assembleDebug lintDebug --stacktrace
+        working-directory: android
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flex-able-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: android-lint-report
+          path: android/app/build/reports/
+          retention-days: 7
   backend:
     runs-on: ubuntu-latest
     defaults:

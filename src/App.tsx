@@ -62,6 +62,14 @@ import { auth, ledgerApi, loadLedger, type Me } from './api/ledger'
 import { Amount, Brand, Button, CategoryIcon, Empty, ErrorText, Field, Row, Sheet } from './ui'
 import { AuthForm, CaptureForm, PlanForm, ProfileForm, TransactionForm, Welcome } from './forms'
 import { BankSyncInfo, CsvForm } from './importUI'
+import {
+  addPlanToCalendar,
+  deviceCalendarAvailable,
+  deviceEvents,
+  googleCalendarAvailable,
+  googleEvents,
+} from './calendar'
+import { isNative } from './native'
 
 type Page = 'home' | 'plans' | 'records' | 'settings'
 type Phase = 'booting' | 'offline' | 'welcome' | 'auth' | 'setup' | 'ready'
@@ -1470,6 +1478,12 @@ function PlanDetail({
             <Pencil size={17} />
             {plan.confirmed ? '계획 수정' : '금액 확인하고 확정'}
           </Button>
+          {plan.date >= ledger.budget.today && (
+            <Button variant="quiet" onClick={() => void addPlanToCalendar(plan).catch(() => {})}>
+              <CalendarDays size={17} />
+              {isNative ? '휴대폰 캘린더에 추가' : 'Google 캘린더에 추가'}
+            </Button>
+          )}
         </>
       )}
       {linked.map((t) => (
@@ -1772,40 +1786,89 @@ function CalendarImport({
   ledger: Ledger
   onSave: (items: Array<{ title: string; date: string }>) => Promise<void>
 }) {
+  const today = ledger.budget.today
+  const sources = [
+    ...(deviceCalendarAvailable ? [{ key: 'device', label: '휴대폰 캘린더' } as const] : []),
+    ...(googleCalendarAvailable ? [{ key: 'google', label: 'Google 캘린더' } as const] : []),
+    { key: 'file', label: '.ics 파일' } as const,
+  ]
+  const [source, setSource] = useState<(typeof sources)[number]['key']>(sources[0].key)
   const [items, setItems] = useState<Array<{ title: string; date: string; selected: boolean }>>([])
   const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
+  const [busy, setBusy] = useState(false)
   const exists = (item: { title: string; date: string }) =>
     ledger.plans.some((p) => p.title === item.title && p.date === item.date)
+  /** 어느 출처든 오늘 이후 일정만, 같은 날 같은 제목은 한 번만 보여준다. */
+  const show = (events: Array<{ title: string; date: string }>) => {
+    const upcoming = events.filter((p) => p.date >= today)
+    const unique = upcoming.filter(
+      (p, i) => upcoming.findIndex((x) => x.title === p.title && x.date === p.date) === i,
+    )
+    if (!unique.length) throw new Error('오늘 이후의 일정을 찾지 못했어요.')
+    setItems(unique.map((p) => ({ ...p, title: p.title.slice(0, 60), selected: !exists(p) })))
+    setError('')
+  }
+  const load = async (task: () => Promise<Array<{ title: string; date: string }>>) => {
+    setBusy(true)
+    setItems([])
+    try {
+      show(await task())
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="form-stack">
-      <p>캘린더에서 내보낸 .ics 파일을 불러올 수 있어요. 금액이 없는 일정은 미확정 상태로 저장해요.</p>
-      <label className="upload-zone">
-        <Upload size={28} />
-        <strong>캘린더 파일 선택</strong>
-        <span>.ics · 1MB 이하</span>
-        <input
-          aria-label="캘린더 파일 선택"
-          type="file"
-          accept=".ics,text/calendar"
-          onChange={async (e) => {
-            const file = e.target.files?.[0]
-            if (!file) return
-            try {
-              if (file.size > 1e6) throw new Error('1MB 이하 파일을 선택해주세요.')
-              const events = parseCalendar(await file.text()).filter((p) => p.date >= ledger.budget.today)
-              const unique = events.filter(
-                (p, i) => events.findIndex((x) => x.title === p.title && x.date === p.date) === i,
-              )
-              if (!unique.length) throw new Error('오늘 이후의 일정을 찾지 못했어요.')
-              setItems(unique.map((p) => ({ ...p, title: p.title.slice(0, 60), selected: !exists(p) })))
-              setError('')
-            } catch (err) {
-              setError((err as Error).message)
-            }
-          }}
-        />
-      </label>
+      <p>캘린더 일정을 금액이 없는 미확정 계획으로 불러와요. 내 부담 금액을 확인한 뒤 확정해주세요.</p>
+      {sources.length > 1 && (
+        <div className="segmented">
+          {sources.map((s) => (
+            <button
+              type="button"
+              key={s.key}
+              className={source === s.key ? 'selected' : ''}
+              onClick={() => {
+                setSource(s.key)
+                setItems([])
+                setError('')
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {source === 'file' ? (
+        <label className="upload-zone">
+          <Upload size={28} />
+          <strong>캘린더 파일 선택</strong>
+          <span>.ics · 1MB 이하</span>
+          <input
+            aria-label="캘린더 파일 선택"
+            type="file"
+            accept=".ics,text/calendar"
+            onChange={(e) => {
+              const file = e.target.files?.[0]
+              if (!file) return
+              void load(async () => {
+                if (file.size > 1e6) throw new Error('1MB 이하 파일을 선택해주세요.')
+                return parseCalendar(await file.text())
+              })
+            }}
+          />
+        </label>
+      ) : (
+        <Button
+          variant="secondary"
+          disabled={busy}
+          onClick={() => void load(() => (source === 'device' ? deviceEvents(today) : googleEvents(today)))}
+        >
+          <CalendarDays size={17} />
+          {busy ? '일정을 불러오는 중' : `앞으로 60일 일정 불러오기`}
+        </Button>
+      )}
       {items.map((item, i) => (
         <label className="check-row" key={i}>
           <input
@@ -1827,17 +1890,21 @@ function CalendarImport({
         </label>
       ))}
       <p className="field-hint">
-        자동 동기화는 제공하지 않아요. 반복 일정은 파일에 명시된 시작일만 불러오며, 반복 규칙은 펼치지 않아요.
-        시간대가 있는 일정은 날짜를 한 번 더 확인해주세요.
+        {source === 'device'
+          ? '기기에 동기화된 Google 계정 캘린더도 함께 읽어요. 처음에는 캘린더 읽기 권한을 물어봐요.'
+          : source === 'google'
+            ? 'Google 캘린더는 읽기 권한만 받고, 이번 가져오기가 끝나면 권한을 보관하지 않아요.'
+            : '반복 일정은 파일에 명시된 시작일만 불러오며, 반복 규칙은 펼치지 않아요.'}{' '}
+        자동 동기화는 하지 않아요.
       </p>
       <ErrorText message={error} />
       <Button
-        disabled={saving || !items.some((i) => i.selected)}
+        disabled={busy || !items.some((i) => i.selected)}
         onClick={() => {
-          setSaving(true)
+          setBusy(true)
           onSave(items.filter((i) => i.selected))
             .catch((e) => setError(errorMessage(e)))
-            .finally(() => setSaving(false))
+            .finally(() => setBusy(false))
         }}
       >
         선택 일정 불러오기
