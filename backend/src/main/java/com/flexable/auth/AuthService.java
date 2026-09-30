@@ -5,6 +5,7 @@ import java.util.Locale;
 import java.util.UUID;
 
 import com.flexable.common.error.ConflictException;
+import com.flexable.ledger.application.LedgerDataService;
 import com.flexable.user.User;
 import com.flexable.user.UserRepository;
 
@@ -29,8 +30,11 @@ class AuthService {
 
 	private final Clock clock;
 
+	private final LedgerDataService demoData;
+
 	AuthService(UserRepository users, PasswordEncoder passwordEncoder, TokenService tokens, LoginThrottle throttle,
-			Clock clock) {
+			Clock clock, LedgerDataService demoData) {
+		this.demoData = demoData;
 		this.users = users;
 		this.passwordEncoder = passwordEncoder;
 		this.tokens = tokens;
@@ -52,6 +56,16 @@ class AuthService {
 		}
 		catch (DataIntegrityViolationException ex) {
 			throw new ConflictException("이미 가입된 이메일이에요.");
+		}
+		return tokens.issue(user.getId());
+	}
+
+	/** 가입 없이 둘러보기: 자격 증명 없는 사용자를 만들고, 원하면 시연 데이터를 채운다. */
+	@Transactional
+	TokenService.Tokens guest(boolean demo) {
+		User user = users.saveAndFlush(User.guest(UUID.randomUUID().toString(), clock.instant()));
+		if (demo) {
+			demoData.seedDemo(user.getId());
 		}
 		return tokens.issue(user.getId());
 	}

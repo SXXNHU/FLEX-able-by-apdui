@@ -57,6 +57,12 @@ public final class ImportModels {
 
 	}
 
+	/** 직접 입력 전 확인: 같은 결제가 이미 있는지. {@code excludeId}는 수정 중인 거래 자신 */
+	public record DuplicateCheckRequest(@NotBlank @Size(max = 60) String title,
+			@Min(1) @Max(1_000_000_000_000L) long amount, @NotNull LocalDate date, @NotNull TransactionKind kind,
+			UUID excludeId) {
+	}
+
 	public record DuplicateInfo(String transactionId, String title, long amount, LocalDate date,
 			TransactionSource source, DuplicateFinder.Level level) {
 	}

@@ -1,7 +1,11 @@
 package com.flexable.importing.api;
 
+import java.util.List;
+
 import com.flexable.importing.application.ImportModels.CandidatesRequest;
 import com.flexable.importing.application.ImportModels.CandidatesResponse;
+import com.flexable.importing.application.ImportModels.DuplicateCheckRequest;
+import com.flexable.importing.application.ImportModels.DuplicateInfo;
 import com.flexable.importing.application.ImportModels.ImportRequest;
 import com.flexable.importing.application.ImportModels.ImportResponse;
 import com.flexable.importing.application.ImportService;
@@ -25,6 +29,11 @@ class ImportController {
 	@PostMapping("/import-candidates")
 	CandidatesResponse candidates(@Valid @RequestBody CandidatesRequest request) {
 		return service.candidates(request);
+	}
+
+	@PostMapping("/duplicates")
+	List<DuplicateInfo> duplicates(@Valid @RequestBody DuplicateCheckRequest request) {
+		return service.duplicates(request);
 	}
 
 	@PostMapping("/import")

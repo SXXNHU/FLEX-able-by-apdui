@@ -6,6 +6,8 @@ import java.time.LocalDate;
 import com.flexable.common.error.BusinessRuleException;
 import com.flexable.common.error.NotFoundException;
 import com.flexable.user.CurrentUser;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +32,18 @@ public class ProfileService {
 		return profiles.findById(currentUser.id())
 			.map(ProfileResponse::of)
 			.orElseThrow(() -> new NotFoundException("아직 예산 설정 전이에요."));
+	}
+
+	public record SettingsRequest(@NotNull @Pattern(regexp = "^([01]\\d|2[0-3]):[0-5]\\d$",
+			message = "알림 시간을 HH:mm 형식으로 입력해주세요.") String notificationTime, boolean notificationsEnabled) {
+	}
+
+	@Transactional
+	public ProfileResponse saveSettings(SettingsRequest request) {
+		Profile profile = profiles.findForUpdate(currentUser.id())
+			.orElseThrow(() -> new NotFoundException("아직 예산 설정 전이에요."));
+		profile.updateSettings(request.notificationTime(), request.notificationsEnabled(), clock.instant());
+		return ProfileResponse.of(profiles.saveAndFlush(profile));
 	}
 
 	/** 처음 저장하면 오늘 전날부터 하루 정산을 추적한다 (클라이언트 emptyState와 같은 규칙). */
